@@ -2,16 +2,13 @@
 
 #include <cstdint>
 
+#include "scarlettx/gdk/xgameruntime_abi.h"
+
 #if defined(_WIN32)
 #  if defined(SCARLETTX_BUILDING_D3D12_XS)
 #    define SCARLETTX_D3D12_API __declspec(dllexport)
 #  else
 #    define SCARLETTX_D3D12_API __declspec(dllimport)
-#  endif
-#  if defined(SCARLETTX_BUILDING_XGAMERUNTIME)
-#    define SCARLETTX_XGR_API __declspec(dllexport)
-#  else
-#    define SCARLETTX_XGR_API __declspec(dllimport)
 #  endif
 #  if defined(SCARLETTX_BUILDING_XBOX_BVH)
 #    define SCARLETTX_BVH_API __declspec(dllexport)
@@ -20,7 +17,6 @@
 #  endif
 #else
 #  define SCARLETTX_D3D12_API
-#  define SCARLETTX_XGR_API
 #  define SCARLETTX_BVH_API
 #endif
 
@@ -94,13 +90,7 @@ SCARLETTX_D3D12_API int32_t D3D12XboxPresentX(
     uint64_t device_handle,
     const D3D12XBOX_PRESENT_PLANE_PARAMETERS* plane);
 
-// xgameruntime.dll exports
-SCARLETTX_XGR_API int32_t XGameRuntimeInitialize();
-SCARLETTX_XGR_API void XGameRuntimeUninitialize();
-SCARLETTX_XGR_API uint32_t XSystemGetDeviceType();
-SCARLETTX_XGR_API int32_t XUserGetDefaultXuid(uint64_t* out_xuid);
-SCARLETTX_XGR_API int32_t XTaskQueueCreate(uint64_t* out_queue_handle);
-SCARLETTX_XGR_API int32_t XTaskQueueCloseHandle(uint64_t queue_handle);
+// xgameruntime.dll exports are declared in scarlettx/gdk/xgameruntime_abi.h.
 
 // XboxBvhBuilder.dll exports
 SCARLETTX_BVH_API int32_t XboxBvhBuildBlas(

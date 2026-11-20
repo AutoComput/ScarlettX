@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="540" viewBox="0 0 920 540" role="img" aria-label="ScarlettX Emulation Status">
+  <defs>
+    <style>
+      .bg { fill: #0d1117; }
+      .panel { fill: #161b22; stroke: #30363d; stroke-width: 1; }
+      .title { font: 700 20px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #f0f6fc; }
+      .subtitle { font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #8b949e; }
+      .stat-val { font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #3fb950; }
+      .stat-lbl { font: 500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #8b949e; }
+      .tile-title { font: 700 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #f0f6fc; }
+      .tile-sub { font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #c9d1d9; }
+      .bar-lbl { font: 600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #c9d1d9; }
+      .bar-pct { font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #8b949e; }
+      .legend { font: 500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #8b949e; }
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="920" height="540" rx="12"/>
+  <rect class="panel" x="12" y="12" width="896" height="516" rx="10"/>
+  <text class="title" x="28" y="44">ScarlettX — Xbox Series X|S (Scarlett) Emulation Status</text>
+  <text class="subtitle" x="28" y="64">Auto-generated from implemented HLE exports, PE64 loader modules, and CTest suite</text>
+  <rect x="602" y="24" width="96" height="46" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text class="stat-lbl" x="610" y="40">OVERALL</text>
+  <text class="stat-val" x="610" y="60" style="fill:#3fb950">50.0%</text>
+  <rect x="704" y="24" width="96" height="46" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text class="stat-lbl" x="712" y="40">GDK/GPU EXPORTS</text>
+  <text class="stat-val" x="712" y="60" style="fill:#58a6ff">81</text>
+  <rect x="806" y="24" width="96" height="46" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text class="stat-lbl" x="814" y="40">CTEST SUITE</text>
+  <text class="stat-val" x="814" y="60" style="fill:#3fb950">9/9 PASS</text>
+  <rect x="27.0" y="95.0" width="152.9" height="198.8" rx="6" fill="#3b2e5a" stroke="#a371f7" stroke-width="1.2"/>
+  <text class="tile-title" x="37.0" y="117.0">d3d12_xs</text>
+  <text class="tile-sub" x="37.0" y="134.0">29% (8/28)</text>
+  <rect x="185.9" y="95.0" width="130.2" height="198.8" rx="6" fill="#6e4c13" stroke="#d29922" stroke-width="1.2"/>
+  <text class="tile-title" x="195.9" y="117.0">XTaskQueue</text>
+  <text class="tile-sub" x="195.9" y="134.0">62% (15/24)</text>
+  <rect x="27.0" y="299.8" width="147.9" height="175.2" rx="6" fill="#6e4c13" stroke="#d29922" stroke-width="1.2"/>
+  <text class="tile-title" x="37.0" y="321.8">XUser</text>
+  <text class="tile-sub" x="37.0" y="338.8">54% (13/24)</text>
+  <rect x="180.9" y="299.8" width="135.1" height="175.2" rx="6" fill="#1f6f3b" stroke="#3fb950" stroke-width="1.2"/>
+  <text class="tile-title" x="190.9" y="321.8">XGameSave</text>
+  <text class="tile-sub" x="190.9" y="338.8">91% (20/22)</text>
+  <rect x="322.1" y="95.0" width="181.7" height="105.5" rx="6" fill="#6e4c13" stroke="#d29922" stroke-width="1.2"/>
+  <text class="tile-title" x="332.1" y="117.0">XSystem &amp; Runtime</text>
+  <text class="tile-sub" x="332.1" y="134.0">67% (12/18)</text>
+  <rect x="322.1" y="206.5" width="181.7" height="93.1" rx="6" fill="#6e4c13" stroke="#d29922" stroke-width="1.2"/>
+  <text class="tile-title" x="332.1" y="228.5">XMem &amp; Threading</text>
+  <text class="tile-sub" x="332.1" y="245.5">69% (11/16)</text>
+  <rect x="509.7" y="95.0" width="71.3" height="204.5" rx="6" fill="#3b2e5a" stroke="#a371f7" stroke-width="1.2"/>
+  <text class="tile-sub" x="515.7" y="112.0">DStorage</text>
+  <rect x="322.1" y="305.5" width="153.0" height="81.7" rx="6" fill="#6e4c13" stroke="#d29922" stroke-width="1.2"/>
+  <text class="tile-title" x="332.1" y="327.5">DXR / BVH</text>
+  <text class="tile-sub" x="332.1" y="344.5">58% (7/12)</text>
+  <rect x="322.1" y="393.3" width="153.0" height="81.7" rx="6" fill="#21262d" stroke="#30363d" stroke-width="1.2"/>
+  <text class="tile-title" x="332.1" y="415.3">Audio</text>
+  <text class="tile-sub" x="332.1" y="432.3">0% (0/12)</text>
+  <rect x="481.0" y="305.5" width="100.0" height="103.7" rx="6" fill="#21262d" stroke="#30363d" stroke-width="1.2"/>
+  <text class="tile-title" x="491.0" y="327.5">GameInput</text>
+  <text class="tile-sub" x="491.0" y="344.5">0% (0/10)</text>
+  <rect x="481.0" y="415.2" width="100.0" height="59.8" rx="6" fill="#1f6f3b" stroke="#3fb950" stroke-width="1.2"/>
+  <text class="tile-title" x="491.0" y="437.2">PE64 Loader</text>
+  <text class="tile-sub" x="491.0" y="454.2">83% (5/6)</text>
+  <rect x="594" y="95" width="306" height="380" rx="8" fill="#0d1117" stroke="#30363d"/>
+  <text class="bar-lbl" x="606" y="116" style="fill:#f0f6fc">SUBSYSTEM BREAKDOWN</text>
+  <text class="bar-lbl" x="606" y="134">PE64 Loader</text>
+  <text class="bar-pct" x="892" y="134" text-anchor="end">5/6 (83%)</text>
+  <rect x="606" y="139" width="286" height="6" rx="3" fill="#21262d"/>
+  <rect x="606" y="139" width="238.3" height="6" rx="3" fill="#3fb950"/>
+  <text class="bar-lbl" x="606" y="165">XTaskQueue</text>
+  <text class="bar-pct" x="892" y="165" text-anchor="end">15/24 (62%)</text>
+  <rect x="606" y="170" width="286" height="6" rx="3" fill="#21262d"/>
+  <rect x="606" y="170" width="178.8" height="6" rx="3" fill="#d29922"/>
+  <text class="bar-lbl" x="606" y="196">XGameSave</text>
+  <text class="bar-pct" x="892" y="196" text-anchor="end">20/22 (91%)</text>
+  <rect x="606" y="201" width="286" height="6" rx="3" fill="#21262d"/>
+  <rect x="606" y="201" width="260.0" height="6" rx="3" fill="#3fb950"/>
+  <text class="bar-lbl" x="606" y="227">XUser</text>
+  <text class="bar-pct" x="892" y="227" text-anchor="end">13/24 (54%)</text>
+  <rect x="606" y="232" width="286" height="6" rx="3" fill="#21262d"/>
+  <rect x="606" y="232" width="154.9" height="6" rx="3" fill="#d29922"/>
+  <text class="bar-lbl" x="606" y="258">XSystem</text>
+  <text class="bar-pct" x="892" y="258" text-anchor="end">12/18 (67%)</text>
+  <rect x="606" y="263" width="286" height="6" rx="3" fill="#21262d"/>
+  <rect x="606" y="263" width="190.7" height="6" rx="3" fill="#d29922"/>
+  <text class="bar-lbl" x="606" y="289">XMem/Thread</text>
+  <text class="bar-pct" x="892" y="289" text-anchor="end">11/16 (69%)</text>
+  <rect x="606" y="294" width="286" height="6" rx="3" fill="#21262d"/>
+  <rect x="606" y="294" width="196.6" height="6" rx="3" fill="#d29922"/>
+  <text class="bar-lbl" x="606" y="320">d3d12_xs</text>
+  <text class="bar-pct" x="892" y="320" text-anchor="end">8/28 (29%)</text>
+  <rect x="606" y="325" width="286" height="6" rx="3" fill="#21262d"/>
+  <rect x="606" y="325" width="81.7" height="6" rx="3" fill="#a371f7"/>
+  <text class="bar-lbl" x="606" y="351">DXR / BVH</text>
+  <text class="bar-pct" x="892" y="351" text-anchor="end">7/12 (58%)</text>
+  <rect x="606" y="356" width="286" height="6" rx="3" fill="#21262d"/>
+  <rect x="606" y="356" width="166.8" height="6" rx="3" fill="#d29922"/>
+  <text class="bar-lbl" x="606" y="382">DStorage</text>
+  <text class="bar-pct" x="892" y="382" text-anchor="end">2/14 (14%)</text>
+  <rect x="606" y="387" width="286" height="6" rx="3" fill="#21262d"/>
+  <rect x="606" y="387" width="40.9" height="6" rx="3" fill="#a371f7"/>
+  <text class="bar-lbl" x="606" y="413">Audio</text>
+  <text class="bar-pct" x="892" y="413" text-anchor="end">0/12 (0%)</text>
+  <rect x="606" y="418" width="286" height="6" rx="3" fill="#21262d"/>
+  <text class="bar-lbl" x="606" y="444">GameInput</text>
+  <text class="bar-pct" x="892" y="444" text-anchor="end">0/10 (0%)</text>
+  <rect x="606" y="449" width="286" height="6" rx="3" fill="#21262d"/>
+  <rect x="28" y="492" width="12" height="12" rx="3" fill="#1f6f3b" stroke="#3fb950"/>
+  <text class="legend" x="46" y="502">Implemented &amp; Tested (&gt;=75%)</text>
+  <rect x="243" y="492" width="12" height="12" rx="3" fill="#6e4c13" stroke="#d29922"/>
+  <text class="legend" x="261" y="502">In Progress (40-74%)</text>
+  <rect x="458" y="492" width="12" height="12" rx="3" fill="#3b2e5a" stroke="#a371f7"/>
+  <text class="legend" x="476" y="502">Early / Scaffold (1-39%)</text>
+  <rect x="673" y="492" width="12" height="12" rx="3" fill="#21262d" stroke="#30363d"/>
+  <text class="legend" x="691" y="502">Planned (0%)</text>
+</svg>

@@ -17,8 +17,11 @@ int main() {
         return 2;
     }
 
-    uint64_t task_queue = 0;
-    if (XTaskQueueCreate(&task_queue) != 0 || task_queue == 0) {
+    XTaskQueueHandle task_queue = nullptr;
+    if (XTaskQueueCreate(XTaskQueueDispatchMode_Manual,
+                         XTaskQueueDispatchMode_Manual,
+                         &task_queue) != XGR_S_OK ||
+        task_queue == nullptr) {
         std::cerr << "[hello_scarlett] XTaskQueueCreate failed\n";
         return 3;
     }

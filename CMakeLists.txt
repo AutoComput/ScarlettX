@@ -182,6 +182,8 @@ if(WIN32)
 endif()
 
 scarlettx_add_test(test_kernel_hle tests/test_kernel_hle.cpp)
+scarlettx_add_test(test_xgameruntime_abi tests/test_xgameruntime_abi.cpp)
+target_link_libraries(test_xgameruntime_abi PRIVATE xgameruntime)
 scarlettx_add_test(test_d3d12_warp tests/test_d3d12_warp.cpp)
 scarlettx_add_test(test_rt_pipeline tests/test_rt_pipeline.cpp)
 
