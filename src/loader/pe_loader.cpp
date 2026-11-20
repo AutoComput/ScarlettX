@@ -101,9 +101,12 @@ DllRedirectionTable::DllRedirectionTable() {
     RegisterRedirect("xaudio2_9.dll", "xaudio2_9.dll", true);
     RegisterRedirect("xaudio2_9redist.dll", "xaudio2_9.dll", true);
     RegisterRedirect("gameinput.dll", "GameInput.dll", true);
-    RegisterRedirect("xcurl.dll", "libcurl.dll", true);
+    RegisterRedirect("xcurl.dll", "XCurl.dll", true);
+    RegisterRedirect("libhttpclient.gdk.dll", "libHttpClient.GDK.dll", true);
+    RegisterRedirect("bink2scarlett.dll", "Bink2Scarlett.dll", true);
+    RegisterRedirect("amd_fidelityfx_loader_xbox.dll", "amd_fidelityfx_loader_xbox.dll", true);
+    RegisterRedirect("amd_fidelityfx_upscaler_xbox.dll", "amd_fidelityfx_upscaler_xbox.dll", true);
     RegisterRedirect("pixevt.dll", "pixevt_stub.dll", true);
-    RegisterRedirect("bink2scarlett.dll", "bink2scarlett.dll", false);
 }
 
 void DllRedirectionTable::RegisterRedirect(const std::string& guest_dll,

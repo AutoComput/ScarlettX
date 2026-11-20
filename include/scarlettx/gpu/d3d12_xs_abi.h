@@ -295,6 +295,146 @@ SCARLETTX_D3D12_API int32_t D3D12XboxDestroyRaytracingAccelerationStructure(
     uint64_t device_handle,
     uint64_t as_handle);
 
+// ---------------------------------------------------------------------------
+// Milestone 6: Shader Inspection, Root Signatures, Descriptor Heaps & PSOs
+// ---------------------------------------------------------------------------
+typedef struct D3D12XBOX_SHADER_BYTECODE {
+    const void* Bytecode;
+    uint64_t BytecodeLength;
+} D3D12XBOX_SHADER_BYTECODE;
+
+typedef struct D3D12XBOX_SHADER_INSPECTION {
+    uint32_t ContainerKind;       // 0=Unknown, 1=DXBC, 2=DXIL, 3=ScarlettRDNA2
+    uint32_t Stage;               // 0=Unknown, 1=VS, 2=PS, 3=CS, 4=GS, 5=HS, 6=DS, 7=Lib
+    uint32_t ShaderModelMajor;
+    uint32_t ShaderModelMinor;
+    uint32_t ChunkCount;
+    uint32_t InputParamCount;
+    uint32_t OutputParamCount;
+    uint32_t HasRaytracingExports;
+    uint32_t HasEmbeddedRootSignature;
+    uint32_t HasXboxPrivateChunks;
+    uint64_t ContentHash;
+} D3D12XBOX_SHADER_INSPECTION;
+
+typedef struct D3D12XBOX_ROOT_SIGNATURE_DESC {
+    uint32_t NumRootConstants32Bit;  // b0 root constants (0..16)
+    uint32_t NumCbvs;                // root CBVs starting at b1
+    uint32_t NumSrvs;                // root SRVs starting at t0
+    uint32_t NumUavs;                // root UAVs starting at u0
+    uint32_t Flags;                  // D3D12_ROOT_SIGNATURE_FLAGS (0 = default allow IA)
+} D3D12XBOX_ROOT_SIGNATURE_DESC;
+
+typedef enum D3D12XBOX_DESCRIPTOR_HEAP_TYPE {
+    D3D12XBOX_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV = 0,
+    D3D12XBOX_DESCRIPTOR_HEAP_TYPE_SAMPLER = 1,
+    D3D12XBOX_DESCRIPTOR_HEAP_TYPE_RTV = 2,
+    D3D12XBOX_DESCRIPTOR_HEAP_TYPE_DSV = 3
+} D3D12XBOX_DESCRIPTOR_HEAP_TYPE;
+
+typedef struct D3D12XBOX_DESCRIPTOR_HEAP_DESC {
+    uint32_t Type;            // D3D12XBOX_DESCRIPTOR_HEAP_TYPE
+    uint32_t NumDescriptors;
+    uint32_t ShaderVisible;   // 1 for shader-visible CBV_SRV_UAV / SAMPLER
+} D3D12XBOX_DESCRIPTOR_HEAP_DESC;
+
+typedef struct D3D12XBOX_GRAPHICS_PSO_DESC {
+    uint64_t RootSignatureHandle;
+    D3D12XBOX_SHADER_BYTECODE VS;
+    D3D12XBOX_SHADER_BYTECODE PS;
+    uint32_t RtvFormat;          // DXGI_FORMAT (0 => DXGI_FORMAT_R8G8B8A8_UNORM)
+    uint32_t PrimitiveTopology;  // 0/3 => Triangle
+    uint32_t SampleCount;        // 0/1 => 1
+    uint32_t Flags;
+} D3D12XBOX_GRAPHICS_PSO_DESC;
+
+typedef struct D3D12XBOX_COMPUTE_PSO_DESC {
+    uint64_t RootSignatureHandle;
+    D3D12XBOX_SHADER_BYTECODE CS;
+    uint32_t Flags;
+} D3D12XBOX_COMPUTE_PSO_DESC;
+
+typedef struct D3D12XBOX_PIPELINE_CACHE_STATS {
+    uint64_t CacheHits;
+    uint64_t CacheMisses;
+    uint32_t LiveRootSignatures;
+    uint32_t LiveDescriptorHeaps;
+    uint32_t LiveGraphicsPsos;
+    uint32_t LiveComputePsos;
+    uint32_t LiveRaytracingPsos;
+} D3D12XBOX_PIPELINE_CACHE_STATS;
+
+typedef struct D3D12XBOX_RAYTRACING_PSO_DESC {
+    uint64_t GlobalRootSignatureHandle;
+    D3D12XBOX_SHADER_BYTECODE DxilLibrary;
+    uint32_t MaxPayloadSizeInBytes;
+    uint32_t MaxAttributeSizeInBytes;
+    uint32_t MaxTraceRecursionDepth;
+} D3D12XBOX_RAYTRACING_PSO_DESC;
+
+SCARLETTX_D3D12_API int32_t D3D12XboxInspectShader(
+    const D3D12XBOX_SHADER_BYTECODE* shader,
+    D3D12XBOX_SHADER_INSPECTION* out_info);
+
+SCARLETTX_D3D12_API int32_t D3D12XboxCreateRootSignature(
+    uint64_t device_handle,
+    const D3D12XBOX_ROOT_SIGNATURE_DESC* desc,
+    uint64_t* out_root_sig_handle);
+SCARLETTX_D3D12_API int32_t D3D12XboxDestroyRootSignature(
+    uint64_t device_handle,
+    uint64_t root_sig_handle);
+
+SCARLETTX_D3D12_API int32_t D3D12XboxCreateDescriptorHeap(
+    uint64_t device_handle,
+    const D3D12XBOX_DESCRIPTOR_HEAP_DESC* desc,
+    uint64_t* out_heap_handle);
+SCARLETTX_D3D12_API int32_t D3D12XboxDestroyDescriptorHeap(
+    uint64_t device_handle,
+    uint64_t heap_handle);
+SCARLETTX_D3D12_API uint32_t D3D12XboxGetDescriptorHandleIncrementSize(
+    uint64_t device_handle,
+    uint32_t heap_type);
+
+SCARLETTX_D3D12_API int32_t D3D12XboxCreateGraphicsPipelineState(
+    uint64_t device_handle,
+    const D3D12XBOX_GRAPHICS_PSO_DESC* desc,
+    uint64_t* out_pso_handle);
+SCARLETTX_D3D12_API int32_t D3D12XboxCreateComputePipelineState(
+    uint64_t device_handle,
+    const D3D12XBOX_COMPUTE_PSO_DESC* desc,
+    uint64_t* out_pso_handle);
+SCARLETTX_D3D12_API int32_t D3D12XboxCreateRaytracingPipelineState(
+    uint64_t device_handle,
+    const D3D12XBOX_RAYTRACING_PSO_DESC* desc,
+    uint64_t* out_pso_handle);
+SCARLETTX_D3D12_API int32_t D3D12XboxDestroyPipelineState(
+    uint64_t device_handle,
+    uint64_t pso_handle);
+
+SCARLETTX_D3D12_API int32_t D3D12XboxDispatchCompute(
+    uint64_t device_handle,
+    uint64_t pso_handle,
+    uint32_t group_x,
+    uint32_t group_y,
+    uint32_t group_z,
+    const uint32_t* root_constants,
+    uint32_t root_constant_count,
+    void* out_uav_data,
+    uint32_t uav_byte_size);
+
+SCARLETTX_D3D12_API int32_t D3D12XboxRenderWithPipelineState(
+    uint64_t device_handle,
+    uint64_t pso_handle,
+    uint32_t width,
+    uint32_t height,
+    uint32_t vertex_count,
+    const char* optional_ppm_path,
+    uint64_t* out_pixel_hash);
+
+SCARLETTX_D3D12_API int32_t D3D12XboxGetPipelineCacheStats(
+    uint64_t device_handle,
+    D3D12XBOX_PIPELINE_CACHE_STATS* out_stats);
+
 // xgameruntime.dll exports are declared in scarlettx/gdk/xgameruntime_abi.h.
 
 // ---------------------------------------------------------------------------

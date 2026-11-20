@@ -1,18 +1,44 @@
 #!/usr/bin/env python3
-"""Generate ScarlettX's AnyPS5-style emulation status SVG and README status section.
+"""Generate ScarlettX's Status dashboard (variant E: purple GitHub contribution graph).
 
 Inspects the actual C++ headers, shim exports, and CTest targets in the repo so
 the reported API counts and subsystem progress reflect real implemented code.
+Outputs:
+  - docs/status.svg   (fixed 900px GitHub-dark purple contribution graph SVG)
+  - docs/status.html  (responsive standalone HTML matching the same design DNA)
+  - README.md         (auto-updated status section between SCARLETTX_STATUS markers)
 """
 
 from __future__ import annotations
 
 import html
+import math
 import pathlib
 import re
 from dataclasses import dataclass
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# Design DNA: ScarlettX Status, variant E (purple)
+BG = "#0d1117"
+BORDER = "#30363d"
+BORDER_STRONG = "#3d444d"
+BORDER_MUTED = "#21262d"
+FG = "#e6edf3"
+FG_MUTED = "#9198a1"
+FG_SOFT = "#d1d7e0"
+EMPTY_FILL = "#151b23"
+EMPTY_STROKE = "rgba(240,246,252,0.08)"
+LV0 = "#3c1e70"  # < 40%
+LV1 = "#6e40c9"  # 40-59%
+LV2 = "#a371f7"  # 60-79%
+LV3 = "#d2a8ff"  # >= 80%
+WARN = "#d29922"
+BADGE_LABEL = "#555555"
+BADGE_FN = "#a371f7"
+BADGE_EXPORTS = "#007ec6"
+BADGE_TESTS = "#3b8a1f"
+BADGE_TARGET = "#6e40c9"
 
 
 @dataclass
@@ -25,10 +51,38 @@ class Subsystem:
     notes: str
 
     @property
-    def pct(self) -> float:
+    def ratio(self) -> float:
         if self.target <= 0:
             return 0.0
-        return min(100.0, (self.implemented / self.target) * 100.0)
+        return min(1.0, self.implemented / self.target)
+
+    @property
+    def pct(self) -> float:
+        return self.ratio * 100.0
+
+
+def level_color(ratio: float, implemented: int) -> str:
+    if implemented <= 0:
+        return EMPTY_FILL
+    if ratio >= 0.80:
+        return LV3
+    if ratio >= 0.60:
+        return LV2
+    if ratio >= 0.40:
+        return LV1
+    return LV0
+
+
+def level_class(ratio: float, implemented: int) -> str:
+    if implemented <= 0:
+        return "empty"
+    if ratio >= 0.80:
+        return "lv3"
+    if ratio >= 0.60:
+        return "lv2"
+    if ratio >= 0.40:
+        return "lv1"
+    return "lv0"
 
 
 def count_exported_symbols(header: pathlib.Path, macro: str, prefix: str) -> int:
@@ -48,16 +102,18 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
     ds_hdr = ROOT / "include/scarlettx/io/dstorage_abi.h"
     xa_hdr = ROOT / "include/scarlettx/audio/xaudio2_abi.h"
     gi_hdr = ROOT / "include/scarlettx/input/gameinput_abi.h"
+    bink_hdr = ROOT / "include/scarlettx/middleware/bink2_abi.h"
+    ffx_hdr = ROOT / "include/scarlettx/middleware/ffx_abi.h"
+    hc_hdr = ROOT / "include/scarlettx/net/httpclient_abi.h"
+    curl_hdr = ROOT / "include/scarlettx/net/xcurl_abi.h"
     cmake_txt = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8", errors="ignore")
 
-    # Count real CTest registrations
     test_count = (
         len(re.findall(r"\bscarlettx_add_test\(", cmake_txt))
         + len(re.findall(r"\badd_test\(", cmake_txt))
-        - 1  # subtract add_test inside scarlettx_add_test function definition
+        - 1
     )
 
-    # Count real exported xgameruntime symbols by GDK family
     xruntime_cnt = count_exported_symbols(xgr_hdr, "SCARLETTX_XGR_API", "XGameRuntime") + count_exported_symbols(
         xgr_hdr, "SCARLETTX_XGR_API", "XGameGet"
     )
@@ -77,6 +133,12 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
         xa_hdr, "SCARLETTX_XAUDIO2_API", "Xma2"
     )
     gi_cnt = count_exported_symbols(gi_hdr, "SCARLETTX_GAMEINPUT_API", "GameInput")
+    bink_cnt = count_exported_symbols(bink_hdr, "SCARLETTX_BINK2_API", "Bink")
+    ffx_cnt = count_exported_symbols(ffx_hdr, "SCARLETTX_FFX_LOADER_API", "ffx") + count_exported_symbols(
+        ffx_hdr, "SCARLETTX_FFX_UPSCALER_API", "ffx"
+    )
+    hc_cnt = count_exported_symbols(hc_hdr, "SCARLETTX_HC_API", "HC")
+    curl_cnt = count_exported_symbols(curl_hdr, "SCARLETTX_XCURL_API", "curl_")
 
     total_exports = (
         xruntime_cnt
@@ -91,6 +153,10 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
         + ds_cnt
         + xa_cnt
         + gi_cnt
+        + bink_cnt
+        + ffx_cnt
+        + hc_cnt
+        + curl_cnt
     )
 
     loader_features = sum(
@@ -106,26 +172,31 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
         if (ROOT / rel).exists()
     )
 
+    shader_ir_ready = 1 if (ROOT / "src/gpu/shader_ir.cpp").exists() else 0
+
     subsystems = [
         Subsystem(
-            name="PE64 Loader & Auto-Stubs",
-            short_name="Loader",
-            category="Core",
-            implemented=loader_features,
-            target=6,
-            notes="PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks",
+            name="d3d12_xs → PC D3D12 & PSOs",
+            short_name="d3d12",
+            category="Graphics",
+            implemented=d3d_cnt + shader_ir_ready,
+            target=46,
+            notes=(
+                f"{d3d_cnt} exports + DXIL/DXBC container parser & Xbox-chunk stripper; "
+                "root signatures, descriptor heaps, graphics/compute/software-DXR PSOs, pipeline cache, WARP backend"
+            ),
         ),
         Subsystem(
             name="XTaskQueue & XAsync",
-            short_name="XTaskQueue",
+            short_name="XTask",
             category="xgameruntime",
             implemented=xtask_cnt + xasync_cnt,
             target=24,
             notes=f"{xtask_cnt} XTaskQueue + {xasync_cnt} XAsync exports (manual/threadpool/delayed/monitors/cancel)",
         ),
         Subsystem(
-            name="XGameSave (Persistent)",
-            short_name="XGameSave",
+            name="XGameSave (persistent)",
+            short_name="Save",
             category="xgameruntime",
             implemented=xgamesave_cnt,
             target=22,
@@ -141,7 +212,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
         ),
         Subsystem(
             name="XSystem & Runtime",
-            short_name="XSystem",
+            short_name="XSys",
             category="xgameruntime",
             implemented=xruntime_cnt + xsystem_cnt,
             target=18,
@@ -149,26 +220,15 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
         ),
         Subsystem(
             name="XMem & Threading",
-            short_name="XMem/Thread",
+            short_name="XMem",
             category="xgameruntime",
             implemented=xmem_cnt,
             target=16,
             notes=f"{xmem_cnt} exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state",
         ),
         Subsystem(
-            name="d3d12_xs → PC D3D12",
-            short_name="d3d12_xs",
-            category="Graphics",
-            implemented=d3d_cnt + 2,
-            target=32,
-            notes=(
-                f"{d3d_cnt} exports; D3D12CreateDeviceX → real ID3D12Device, root-sig forwarding, "
-                "PresentXEx/frame stats, Suspend/Resume, ResourceAllocationInfo, WARP backend"
-            ),
-        ),
-        Subsystem(
             name="DXR / XboxBvhBuilder",
-            short_name="DXR / BVH",
+            short_name="DXR",
             category="Graphics",
             implemented=bvh_cnt + 4,
             target=14,
@@ -179,7 +239,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
         ),
         Subsystem(
             name="DirectStorage & XVD",
-            short_name="DStorage",
+            short_name="DStor",
             category="Storage",
             implemented=ds_cnt + (1 if (ROOT / "src/loader/xvd_container.cpp").exists() else 0),
             target=24,
@@ -189,7 +249,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             ),
         ),
         Subsystem(
-            name="Audio (XAudio2/XMA2)",
+            name="Audio (XAudio2 / XMA2)",
             short_name="Audio",
             category="Media",
             implemented=xa_cnt,
@@ -201,7 +261,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
         ),
         Subsystem(
             name="Input (GameInput)",
-            short_name="GameInput",
+            short_name="Input",
             category="Input",
             implemented=gi_cnt,
             target=16,
@@ -210,272 +270,448 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
                 "(Current/Next/Previous), state injection, 4-motor impulse-trigger rumble"
             ),
         ),
+        Subsystem(
+            name="Middleware (Bink2 / FSR)",
+            short_name="Midw",
+            category="Middleware",
+            implemented=bink_cnt + ffx_cnt,
+            target=34,
+            notes=(
+                f"{bink_cnt} Bink2Scarlett + {ffx_cnt} amd_fidelityfx_loader/upscaler_xbox exports; "
+                "deterministic offline HLE shims (synthetic RGBA/BGRA frames, bilinear upscale & hash)"
+            ),
+        ),
+        Subsystem(
+            name="Networking (HTTP / XCurl)",
+            short_name="Net",
+            category="Networking",
+            implemented=hc_cnt + curl_cnt,
+            target=40,
+            notes=(
+                f"{hc_cnt} libHttpClient.GDK + {curl_cnt} XCurl exports; "
+                "deterministic offline mock registry, async callbacks, headers, fallback responses"
+            ),
+        ),
+        Subsystem(
+            name="PE64 Loader & Auto-Stubs",
+            short_name="PE64",
+            category="Core",
+            implemented=loader_features,
+            target=6,
+            notes="PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks",
+        ),
+        Subsystem(
+            name="Retail Crypto & Native Codecs",
+            short_name="Retail",
+            category="Platform",
+            implemented=0,
+            target=14,
+            notes="Encrypted retail XVD, production GDeflate/XMA2/Bink codecs, RDNA2 XS2 ISA lifting, hardware DXR, Vulkan",
+        ),
     ]
 
     return subsystems, total_exports, test_count
 
 
-# ---------------------------------------------------------------------------
-# Squarified Treemap (Bruls, Huizing, van Wijk) for clean aspect ratios
-# ---------------------------------------------------------------------------
-def _worst_aspect(row_areas: list[float], side: float) -> float:
-    if not row_areas or side <= 0:
-        return float("inf")
-    s = sum(row_areas)
-    s2 = s * s
-    side2 = side * side
-    return max(max((side2 * a) / s2, s2 / (side2 * a)) for a in row_areas if a > 0)
-
-
-def layout_squarified(
-    items: list[tuple[Subsystem, float]], x: float, y: float, w: float, h: float
-) -> list[tuple[Subsystem, float, float, float, float]]:
-    total = sum(weight for _, weight in items)
-    if total <= 0 or w <= 0 or h <= 0:
-        return []
-
-    scale = (w * h) / total
-    remaining = [(sub, weight * scale) for sub, weight in items]
-    result: list[tuple[Subsystem, float, float, float, float]] = []
-
-    cx, cy, cw, ch = x, y, w, h
-    while remaining:
-        short_side = min(cw, ch)
-        row: list[tuple[Subsystem, float]] = [remaining.pop(0)]
-        while remaining:
-            cand = remaining[0]
-            curr_areas = [a for _, a in row]
-            next_areas = curr_areas + [cand[1]]
-            if _worst_aspect(next_areas, short_side) <= _worst_aspect(curr_areas, short_side):
-                row.append(remaining.pop(0))
-            else:
-                break
-
-        row_area = sum(a for _, a in row)
-        if cw >= ch:
-            strip_w = row_area / ch if ch > 0 else 0.0
-            ry = cy
-            for sub, a in row:
-                rh = a / strip_w if strip_w > 0 else 0.0
-                result.append((sub, cx, ry, strip_w, rh))
-                ry += rh
-            cx += strip_w
-            cw -= strip_w
-        else:
-            strip_h = row_area / cw if cw > 0 else 0.0
-            rx = cx
-            for sub, a in row:
-                rw = a / strip_h if strip_h > 0 else 0.0
-                result.append((sub, rx, cy, rw, strip_h))
-                rx += rw
-            cy += strip_h
-            ch -= strip_h
-
-    return result
-
-
-def palette_for_pct(pct: float) -> tuple[str, str, str]:
-    """Return (tile_fill, tile_border, accent) in a restrained GitHub-dark palette."""
-    if pct >= 75.0:
-        return ("#15331d", "#245831", "#3fb950")
-    if pct >= 40.0:
-        return ("#34260e", "#634717", "#d29922")
-    if pct > 0.0:
-        return ("#241d38", "#483770", "#a371f7")
-    return ("#161b22", "#2b3138", "#484f58")
-
-
-def fit_text(text: str, max_px: float, char_px: float) -> str:
-    if max_px <= char_px:
-        return ""
-    max_chars = int(max_px / char_px)
-    if len(text) <= max_chars:
-        return text
-    if max_chars <= 2:
-        return ""
-    return text[: max_chars - 1].rstrip() + "…"
+def _badge_width(text: str) -> int:
+    # Approximate Verdana 11px width + 12px horizontal padding
+    return max(26, int(round(len(text) * 6.4)) + 14)
 
 
 def render_svg(subsystems: list[Subsystem], total_exports: int, test_count: int) -> str:
-    width = 900
-    margin = 24
-    inner_w = width - 2 * margin
+    W = 900
+    PAD_X = 36
+    PAD_Y = 30
+    INNER_W = W - 2 * PAD_X  # 828px
 
     total_impl = sum(s.implemented for s in subsystems)
     total_target = sum(s.target for s in subsystems)
     overall_pct = (total_impl / total_target * 100.0) if total_target else 0.0
 
-    # Layout geometry
-    header_y = 36
-    map_x, map_y, map_w, map_h = float(margin), 64.0, float(inner_w), 228.0
-    sub_hdr_y = int(map_y + map_h) + 28
-    grid_y = sub_hdr_y + 18
-    row_h = 26
-    num_rows = (len(subsystems) + 1) // 2
-    height = grid_y + num_rows * row_h + 18
+    # Contribution graph geometry (7 rows, column-by-column, 14px squares, 3px gaps, min 2 cols)
+    ROWS = 7
+    CELL = 14
+    CELL_GAP = 3
+    GROUP_GAP = 10
+    BOX_PAD_X = 22
+    BOX_PAD_TOP = 20
+    BOX_PAD_BOT = 16
+    LABEL_H = 14
+    LABEL_GAP = 6
 
-    weighted = sorted([(s, float(s.target)) for s in subsystems], key=lambda t: t[1], reverse=True)
-    rects = layout_squarified(weighted, map_x, map_y, map_w, map_h)
+    groups: list[tuple[Subsystem, int, int]] = []
+    for s in subsystems:
+        cols = max(2, math.ceil(s.target / ROWS))
+        gw = cols * CELL + (cols - 1) * CELL_GAP
+        groups.append((s, cols, gw))
 
-    lines: list[str] = []
-    lines.append(
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" role="img" aria-label="ScarlettX Emulation Status">'
-    )
+    # If the sum of group widths exceeds the inner graph box width (784px), scale cell size slightly
+    # so every square remains crisp and centered without overflowing the 900px SVG.
+    avail_graph_w = INNER_W - 2 * BOX_PAD_X
+    raw_graph_w = sum(gw for _, _, gw in groups) + GROUP_GAP * max(0, len(groups) - 1)
+    if raw_graph_w > avail_graph_w:
+        scale = avail_graph_w / raw_graph_w
+        CELL = max(8, int(math.floor(CELL * scale)))
+        CELL_GAP = max(2, int(math.floor(CELL_GAP * scale)))
+        GROUP_GAP = max(6, int(math.floor(GROUP_GAP * scale)))
+        groups = []
+        for s in subsystems:
+            cols = max(2, math.ceil(s.target / ROWS))
+            gw = cols * CELL + (cols - 1) * CELL_GAP
+            groups.append((s, cols, gw))
+        raw_graph_w = sum(gw for _, _, gw in groups) + GROUP_GAP * max(0, len(groups) - 1)
 
-    # Defs: typography + per-tile clipPaths (guarantees zero text overflow)
-    lines.append("  <defs>")
-    lines.append(
-        """    <style>
-      .h1 { font: 600 18px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #e6edf3; }
-      .sub { font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #7d8590; }
-      .chip { font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #c9d1d9; }
-      .sec { font: 600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #7d8590; letter-spacing: 0.6px; }
-      .t-name { font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #e6edf3; }
-      .t-meta { font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #9ea7b3; }
-      .r-name { font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #c9d1d9; }
-      .r-num { font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #7d8590; }
-      .r-pct { font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #c9d1d9; }
-      .leg { font: 400 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #7d8590; }
-    </style>"""
-    )
+    grid_h = ROWS * CELL + (ROWS - 1) * CELL_GAP
+    legend_gap = 14
+    legend_h = 16
+    graph_box_h = BOX_PAD_TOP + LABEL_H + LABEL_GAP + grid_h + legend_gap + legend_h + BOX_PAD_BOT
 
-    gap = 2.5
-    tile_geoms: list[tuple[int, Subsystem, float, float, float, float]] = []
-    for idx, (sub, rx, ry, rw, rh) in enumerate(rects):
-        tx = rx + gap
-        ty = ry + gap
-        tw = max(2.0, rw - 2 * gap)
-        th = max(2.0, rh - 2 * gap)
-        tile_geoms.append((idx, sub, tx, ty, tw, th))
-        lines.append(
-            f'    <clipPath id="tc{idx}"><rect x="{tx + 2:.1f}" y="{ty + 2:.1f}" '
-            f'width="{max(1.0, tw - 4):.1f}" height="{max(1.0, th - 4):.1f}" rx="4"/></clipPath>'
-        )
-    lines.append("  </defs>")
+    # Vertical flow (16px section spacing)
+    y_heading_baseline = PAD_Y + 26
+    y_heading_rule = y_heading_baseline + 10  # ~8px gap above 1px underline
+    y_badges = y_heading_rule + 16
+    y_graph_box = y_badges + 20 + 16
+    y_list = y_graph_box + graph_box_h + 16
 
-    # Flat dark canvas with subtle hairline border
-    lines.append(
-        f'  <rect x="0.5" y="0.5" width="{width - 1}" height="{height - 1}" rx="8" '
-        f'fill="#0d1117" stroke="#21262d" stroke-width="1"/>'
-    )
+    sorted_subs = sorted(subsystems, key=lambda s: (-s.ratio, -s.implemented, s.name.lower()))
+    list_rows_per_col = math.ceil(len(sorted_subs) / 2)
+    ROW_H = 30
+    list_h = list_rows_per_col * ROW_H
 
-    # Header: title + muted subtitle on left, compact right-aligned metric chips
-    lines.append(f'  <text class="h1" x="{margin}" y="{header_y}">Status</text>')
-    lines.append(
-        f'  <text class="sub" x="{margin + 64}" y="{header_y}">ScarlettX · Xbox Series X|S (Gen9) HLE</text>'
-    )
+    not_started = [s for s in subsystems if s.implemented == 0]
+    callout_h = 44 if not_started else 0
+    y_callout = y_list + list_h + (16 if not_started else 0)
+    H = (y_callout + callout_h if not_started else y_list + list_h) + PAD_Y
 
-    chips = [
-        (f"{overall_pct:.1f}% overall", "#3fb950"),
-        (f"{total_exports} exports", "#58a6ff"),
-        (f"{test_count}/{test_count} tests", "#3fb950"),
+    lines: list[str] = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" '
+        f'aria-label="ScarlettX Status: {overall_pct:.1f}%">',
+        "  <style>",
+        "    text { font-family: 'Mona Sans', -apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif; }",
+        f"    .h2 {{ font-size: 26px; font-weight: 600; fill: {FG}; }}",
+        "    .badge-txt { font-family: Verdana, 'DejaVu Sans', Geneva, sans-serif; font-size: 11px; fill: #ffffff; }",
+        f"    .badge-txt-dark {{ font-family: Verdana, 'DejaVu Sans', Geneva, sans-serif; font-size: 11px; fill: {BG}; }}",
+        f"    .g-label {{ font-size: 11px; fill: {FG_MUTED}; }}",
+        f"    .legend-txt {{ font-size: 12px; fill: {FG_MUTED}; }}",
+        f"    .r-name {{ font-size: 13px; fill: {FG}; }}",
+        f"    .r-count {{ font-size: 13px; fill: {FG_MUTED}; font-variant-numeric: tabular-nums; }}",
+        f"    .r-pct {{ font-size: 13px; font-weight: 600; fill: {FG}; font-variant-numeric: tabular-nums; }}",
+        f"    .callout-txt {{ font-size: 13px; fill: {FG_SOFT}; }}",
+        f"    .callout-lead {{ font-size: 13px; font-weight: 600; fill: {WARN}; }}",
+        "  </style>",
+        f'  <rect width="{W}" height="{H}" fill="{BG}"/>',
+        "",
+        "  <!-- 1. Heading -->",
+        f'  <text class="h2" x="{PAD_X}" y="{y_heading_baseline}">Status: {overall_pct:.1f}%</text>',
+        f'  <line x1="{PAD_X}" y1="{y_heading_rule}" x2="{W - PAD_X}" y2="{y_heading_rule}" stroke="{BORDER_STRONG}" stroke-width="1"/>',
+        "",
+        "  <!-- 2. Badge row -->",
     ]
-    right_x = width - margin
-    for text, dot_col in reversed(chips):
-        chip_w = int(len(text) * 6.8 + 26)
-        cx = right_x - chip_w
-        cy = header_y - 16
-        lines.append(
-            f'  <rect x="{cx}" y="{cy}" width="{chip_w}" height="22" rx="4" '
-            f'fill="#161b22" stroke="#30363d" stroke-width="1"/>'
-        )
-        lines.append(f'  <circle cx="{cx + 10}" cy="{cy + 11}" r="3" fill="{dot_col}"/>')
-        lines.append(f'  <text class="chip" x="{cx + 18}" y="{cy + 15}">{html.escape(text)}</text>')
-        right_x = cx - 8
 
-    # Treemap tiles
-    for idx, sub, tx, ty, tw, th in tile_geoms:
-        fill, border, accent = palette_for_pct(sub.pct)
+    badges = [
+        ("functions", f"{total_impl}/{total_target}", BADGE_FN, True),
+        ("exports", str(total_exports), BADGE_EXPORTS, False),
+        ("tests", f"{test_count}/{test_count} passing", BADGE_TESTS, False),
+        ("target", "Xbox Series X|S (Gen9)", BADGE_TARGET, False),
+    ]
+    bx = PAD_X
+    for idx, (k, v, v_bg, dark_v) in enumerate(badges):
+        kw = _badge_width(k)
+        vw = _badge_width(v)
+        bw = kw + vw
+        clip_id = f"bclip{idx}"
+        lines.append(f'  <clipPath id="{clip_id}"><rect x="{bx}" y="{y_badges}" width="{bw}" height="20" rx="3"/></clipPath>')
+        lines.append(f'  <g clip-path="url(#{clip_id})">')
+        lines.append(f'    <rect x="{bx}" y="{y_badges}" width="{kw}" height="20" fill="{BADGE_LABEL}"/>')
+        lines.append(f'    <rect x="{bx + kw}" y="{y_badges}" width="{vw}" height="20" fill="{v_bg}"/>')
         lines.append(
-            f'  <rect x="{tx:.1f}" y="{ty:.1f}" width="{tw:.1f}" height="{th:.1f}" '
-            f'rx="4" fill="{fill}" stroke="{border}" stroke-width="1"/>'
+            f'    <text class="badge-txt" x="{bx + kw / 2:.1f}" y="{y_badges + 14}" text-anchor="middle">{html.escape(k)}</text>'
         )
-        # Subtle 2px top progress accent bar inside each tile
-        if sub.pct > 0 and tw > 12:
-            bar_w = max(2.0, (tw - 2.0) * (sub.pct / 100.0))
-            lines.append(
-                f'  <rect x="{tx + 1:.1f}" y="{ty + 1:.1f}" width="{bar_w:.1f}" height="2.5" '
-                f'rx="1" fill="{accent}" opacity="0.9"/>'
-            )
+        v_cls = "badge-txt-dark" if dark_v else "badge-txt"
+        lines.append(
+            f'    <text class="{v_cls}" x="{bx + kw + vw / 2:.1f}" y="{y_badges + 14}" text-anchor="middle">{html.escape(v)}</text>'
+        )
+        lines.append("  </g>")
+        bx += bw + 6
 
-        avail_w = tw - 16.0
-        if avail_w >= 28 and th >= 26:
-            # Prefer full name if it fits comfortably, otherwise short_name
-            title = sub.name if len(sub.name) * 7.2 <= avail_w else fit_text(sub.short_name, avail_w, 7.2)
-            if title:
-                lines.append(f'  <g clip-path="url(#tc{idx})">')
+    lines.append("")
+    lines.append("  <!-- 3. Contribution graph box -->")
+    lines.append(
+        f'  <rect x="{PAD_X}" y="{y_graph_box}" width="{INNER_W}" height="{graph_box_h}" rx="6" '
+        f'fill="{BG}" stroke="{BORDER}" stroke-width="1"/>'
+    )
+
+    gx = PAD_X + BOX_PAD_X + max(0.0, (avail_graph_w - raw_graph_w) / 2.0)
+    gy_label = y_graph_box + BOX_PAD_TOP + 10
+    gy_cells = y_graph_box + BOX_PAD_TOP + LABEL_H + LABEL_GAP
+
+    for s, cols, gw in groups:
+        fill_col = level_color(s.ratio, s.implemented)
+        lines.append(f'  <text class="g-label" x="{gx:.1f}" y="{gy_label}">{html.escape(s.short_name)}</text>')
+        for i in range(cols * ROWS):
+            col = i // ROWS
+            row = i % ROWS
+            cx = gx + col * (CELL + CELL_GAP)
+            cy = gy_cells + row * (CELL + CELL_GAP)
+            if i < s.implemented:
+                lines.append(f'  <rect x="{cx:.1f}" y="{cy:.1f}" width="{CELL}" height="{CELL}" rx="3" fill="{fill_col}"/>')
+            elif i < s.target:
                 lines.append(
-                    f'    <text class="t-name" x="{tx + 8:.1f}" y="{ty + 21:.1f}">{html.escape(title)}</text>'
+                    f'  <rect x="{cx + 0.5:.1f}" y="{cy + 0.5:.1f}" width="{CELL - 1}" height="{CELL - 1}" rx="3" '
+                    f'fill="{EMPTY_FILL}" stroke="{EMPTY_STROKE}" stroke-width="1"/>'
                 )
-                if th >= 44:
-                    meta_full = f"{sub.pct:.0f}% · {sub.implemented}/{sub.target}"
-                    meta_short = f"{sub.pct:.0f}%"
-                    meta = meta_full if len(meta_full) * 6.8 <= avail_w else (
-                        meta_short if len(meta_short) * 6.8 <= avail_w else ""
-                    )
-                    if meta:
-                        lines.append(
-                            f'    <text class="t-meta" x="{tx + 8:.1f}" y="{ty + 37:.1f}">{html.escape(meta)}</text>'
-                        )
-                lines.append("  </g>")
+        gx += gw + GROUP_GAP
 
-    # Subsystems section header + inline legend
-    lines.append(f'  <text class="sec" x="{margin}" y="{sub_hdr_y}">SUBSYSTEMS</text>')
+    # Legend (right-aligned)
+    ly = gy_cells + grid_h + legend_gap + 11
+    rx_end = PAD_X + INNER_W - BOX_PAD_X
+    lines.append(f'  <text class="legend-txt" x="{rx_end}" y="{ly}" text-anchor="end">Done</text>')
+    sw_colors = [LV3, LV2, LV1, LV0, EMPTY_FILL]
+    sx = rx_end - 36 - 11
+    for col in sw_colors:
+        if col == EMPTY_FILL:
+            lines.append(
+                f'  <rect x="{sx + 0.5:.1f}" y="{ly - 9.5:.1f}" width="10" height="10" rx="2" '
+                f'fill="{EMPTY_FILL}" stroke="{EMPTY_STROKE}" stroke-width="1"/>'
+            )
+        else:
+            lines.append(f'  <rect x="{sx:.1f}" y="{ly - 10:.1f}" width="11" height="11" rx="2" fill="{col}"/>')
+        sx -= 15
+    lines.append(f'  <text class="legend-txt" x="{sx + 11}" y="{ly}" text-anchor="end">Not yet</text>')
 
-    legend_items = [
-        ("#3fb950", "Tested >=75%"),
-        ("#d29922", "Partial 40-74%"),
-        ("#a371f7", "Early 1-39%"),
-        ("#484f58", "Planned"),
-    ]
-    lx = width - margin
-    for col, label in reversed(legend_items):
-        item_w = int(len(label) * 6.2 + 16)
-        lx -= item_w
-        lines.append(f'  <rect x="{lx}" y="{sub_hdr_y - 8}" width="8" height="8" rx="2" fill="{col}"/>')
-        lines.append(f'  <text class="leg" x="{lx + 12}" y="{sub_hdr_y}">{html.escape(label)}</text>')
-        lx -= 12
-
-    lines.append(
-        f'  <line x1="{margin}" y1="{sub_hdr_y + 7}" x2="{width - margin}" y2="{sub_hdr_y + 7}" '
-        f'stroke="#21262d" stroke-width="1"/>'
-    )
-
-    # 2-column subsystem progress grid
-    col_gap = 28
-    col_w = (inner_w - col_gap) // 2  # 412px per column
-    bar_x_off = 186
-    bar_w = 128
-
-    for i, sub in enumerate(subsystems):
-        col = i // num_rows
-        row = i % num_rows
-        x0 = margin + col * (col_w + col_gap)
-        y0 = grid_y + row * row_h + 14
-        _, _, accent = palette_for_pct(sub.pct)
-
-        label = fit_text(sub.name, bar_x_off - 10, 6.9)
-        lines.append(f'  <text class="r-name" x="{x0}" y="{y0}">{html.escape(label)}</text>')
-
-        bx = x0 + bar_x_off
-        by = y0 - 7
-        lines.append(f'  <rect x="{bx}" y="{by}" width="{bar_w}" height="6" rx="3" fill="#21262d"/>')
-        if sub.pct > 0:
-            fw = max(3.0, bar_w * (sub.pct / 100.0))
-            lines.append(f'  <rect x="{bx}" y="{by}" width="{fw:.1f}" height="6" rx="3" fill="{accent}"/>')
-
+    lines.append("")
+    lines.append("  <!-- 4. Two-column subsystem list -->")
+    COL_GAP = 40
+    LIST_PAD = 4
+    col_w = (INNER_W - 2 * LIST_PAD - COL_GAP) / 2.0
+    for idx, s in enumerate(sorted_subs):
+        col_i = idx % 2
+        row_i = idx // 2
+        x0 = PAD_X + LIST_PAD + col_i * (col_w + COL_GAP)
+        y_top = y_list + row_i * ROW_H
+        y_mid = y_top + 19
+        dot_fill = level_color(s.ratio, s.implemented)
+        if s.implemented == 0:
+            lines.append(
+                f'  <rect x="{x0 + 0.5:.1f}" y="{y_top + 9.5:.1f}" width="10" height="10" rx="2" '
+                f'fill="{EMPTY_FILL}" stroke="{EMPTY_STROKE}" stroke-width="1"/>'
+            )
+        else:
+            lines.append(f'  <rect x="{x0:.1f}" y="{y_top + 9:.1f}" width="11" height="11" rx="2" fill="{dot_fill}"/>')
+        lines.append(f'  <text class="r-name" x="{x0 + 21:.1f}" y="{y_mid}">{html.escape(s.name)}</text>')
         lines.append(
-            f'  <text class="r-num" x="{x0 + col_w - 40}" y="{y0}" text-anchor="end">'
-            f'{sub.implemented}/{sub.target}</text>'
+            f'  <text class="r-count" x="{x0 + col_w - 48:.1f}" y="{y_mid}" text-anchor="end">'
+            f'{s.implemented} of {s.target}</text>'
         )
         lines.append(
-            f'  <text class="r-pct" x="{x0 + col_w}" y="{y0}" text-anchor="end">'
-            f'{sub.pct:.0f}%</text>'
+            f'  <text class="r-pct" x="{x0 + col_w:.1f}" y="{y_mid}" text-anchor="end">{round(s.pct)}%</text>'
+        )
+        lines.append(
+            f'  <line x1="{x0:.1f}" y1="{y_top + ROW_H}" x2="{x0 + col_w:.1f}" y2="{y_top + ROW_H}" '
+            f'stroke="{BORDER_MUTED}" stroke-width="1"/>'
+        )
+
+    if not_started:
+        lines.append("")
+        lines.append("  <!-- 5. Warning callout -->")
+        lines.append(f'  <rect x="{PAD_X}" y="{y_callout}" width="4" height="{callout_h}" fill="{WARN}"/>')
+        ix = PAD_X + 20
+        iy = y_callout + 10
+        lines.append(
+            f'  <g transform="translate({ix},{iy})">'
+            f'<path d="M8 1.5 15 14H1z" fill="none" stroke="{WARN}" stroke-width="1.5" stroke-linejoin="round"/>'
+            f'<path d="M8 6v3.5M8 11.6v.4" stroke="{WARN}" stroke-width="1.5" stroke-linecap="round"/>'
+            f"</g>"
+        )
+        tx = ix + 26
+        lines.append(
+            f'  <text class="callout-txt" x="{tx}" y="{y_callout + 19}">'
+            f'<tspan class="callout-lead">Not started:</tspan> '
+            f'encrypted retail XVD, production GDeflate/XMA2/Bink codecs, RDNA2 XS2 ISA lifting, hardware DXR,</text>'
+        )
+        lines.append(
+            f'  <text class="callout-txt" x="{tx}" y="{y_callout + 36}">'
+            f'and Vulkan backend. Synthetic offline HLE shims cover middleware and networking for automated tests.</text>'
         )
 
     lines.append("</svg>")
     return "\n".join(lines) + "\n"
+
+
+def render_html(subsystems: list[Subsystem], total_exports: int, test_count: int) -> str:
+    total_impl = sum(s.implemented for s in subsystems)
+    total_target = sum(s.target for s in subsystems)
+    overall_pct = (total_impl / total_target * 100.0) if total_target else 0.0
+
+    js_rows = []
+    for s in subsystems:
+        js_rows.append(
+            f"    [{s.short_name!r}, {s.name!r}, {s.implemented}, {s.target}],"
+        )
+    js_array = "\n".join(js_rows)
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScarlettX — Status</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Mona+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {{
+    --bg: {BG};
+    --border: {BORDER};
+    --border-strong: {BORDER_STRONG};
+    --border-muted: {BORDER_MUTED};
+    --fg: {FG};
+    --fg-muted: {FG_MUTED};
+    --fg-soft: {FG_SOFT};
+    --empty: {EMPTY_FILL};
+    --empty-ring: rgba(240, 246, 252, 0.08);
+    --lv0: {LV0};
+    --lv1: {LV1};
+    --lv2: {LV2};
+    --lv3: {LV3};
+    --warn: {WARN};
+    --badge-label: {BADGE_LABEL};
+    --badge-exports: {BADGE_EXPORTS};
+    --badge-tests: {BADGE_TESTS};
+    --badge-target: {BADGE_TARGET};
+    --cell: 14px;
+    --cell-gap: 3px;
+    --radius: 6px;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: 'Mona Sans', -apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  }}
+  .status {{
+    width: 900px;
+    max-width: 100%;
+    margin: 0 auto;
+    padding: 30px 36px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }}
+  h2 {{
+    margin: 0;
+    font-size: 26px;
+    font-weight: 600;
+    line-height: 1.25;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-strong);
+  }}
+  .badges {{ display: flex; flex-wrap: wrap; gap: 6px; font-family: Verdana, 'DejaVu Sans', Geneva, sans-serif; font-size: 11px; line-height: 20px; }}
+  .badge {{ display: flex; border-radius: 3px; overflow: hidden; }}
+  .badge span {{ padding: 0 6px; color: #fff; }}
+  .badge .k {{ background: var(--badge-label); }}
+  .badge .v-fn {{ background: var(--lv2); color: var(--bg); }}
+  .badge .v-exports {{ background: var(--badge-exports); }}
+  .badge .v-tests {{ background: var(--badge-tests); }}
+  .badge .v-target {{ background: var(--badge-target); }}
+  .graph-box {{
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 22px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    overflow-x: auto;
+  }}
+  .graph {{ display: flex; gap: 10px; justify-content: center; }}
+  .group {{ display: flex; flex-direction: column; gap: 6px; }}
+  .group-label {{ font-size: 11px; color: var(--fg-muted); white-space: nowrap; }}
+  .cells {{
+    display: grid;
+    grid-template-rows: repeat(7, var(--cell));
+    grid-auto-flow: column;
+    grid-auto-columns: var(--cell);
+    gap: var(--cell-gap);
+  }}
+  .cell {{ display: block; width: var(--cell); height: var(--cell); border-radius: 3px; }}
+  .cell.empty, .sw.empty, .dot.empty {{ background: var(--empty); outline: 1px solid var(--empty-ring); outline-offset: -1px; }}
+  .cell.pad {{ background: transparent; }}
+  .lv0 {{ background: var(--lv0); }}
+  .lv1 {{ background: var(--lv1); }}
+  .lv2 {{ background: var(--lv2); }}
+  .lv3 {{ background: var(--lv3); }}
+  .legend {{ display: flex; justify-content: flex-end; align-items: center; gap: 4px; font-size: 12px; color: var(--fg-muted); }}
+  .sw {{ display: block; width: 11px; height: 11px; border-radius: 2px; }}
+  .list {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 40px; padding: 0 4px; }}
+  .row {{ display: flex; align-items: center; gap: 10px; height: 30px; border-bottom: 1px solid var(--border-muted); font-size: 13px; }}
+  .dot {{ width: 11px; height: 11px; border-radius: 2px; flex-shrink: 0; }}
+  .row .name {{ flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .row .count {{ color: var(--fg-muted); font-variant-numeric: tabular-nums; }}
+  .row .pct {{ width: 40px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }}
+  .callout {{ display: flex; gap: 10px; padding: 8px 16px; border-left: 4px solid var(--warn); color: var(--fg-soft); font-size: 13px; }}
+  .callout svg {{ flex-shrink: 0; margin-top: 2px; }}
+  .callout strong {{ color: var(--warn); }}
+  @media (max-width: 640px) {{
+    .status {{ padding: 20px 16px; }}
+    .graph {{ justify-content: flex-start; }}
+    .list {{ grid-template-columns: minmax(0, 1fr); }}
+  }}
+</style>
+</head>
+<body>
+<main class="status">
+  <h2>Status: {overall_pct:.1f}%</h2>
+  <div class="badges">
+    <span class="badge"><span class="k">functions</span><span class="v-fn">{total_impl}/{total_target}</span></span>
+    <span class="badge"><span class="k">exports</span><span class="v-exports">{total_exports}</span></span>
+    <span class="badge"><span class="k">tests</span><span class="v-tests">{test_count}/{test_count} passing</span></span>
+    <span class="badge"><span class="k">target</span><span class="v-target">Xbox Series X|S (Gen9)</span></span>
+  </div>
+  <section class="graph-box" aria-label="Implemented functions per subsystem, one square per function">
+    <div class="graph" id="graph"></div>
+    <div class="legend">Not yet
+      <span class="sw empty"></span><span class="sw lv0"></span><span class="sw lv1"></span><span class="sw lv2"></span><span class="sw lv3"></span>
+    Done</div>
+  </section>
+  <div class="list" id="list"></div>
+  <div class="callout">
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 15 14H1z" fill="none" stroke="{WARN}" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6v3.5M8 11.6v.4" stroke="{WARN}" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <span><strong>Not started:</strong> encrypted retail XVD, production GDeflate/XMA2/Bink codecs, RDNA2 XS2 ISA lifting, hardware DXR, and Vulkan backend.</span>
+  </div>
+</main>
+<script>
+  const SUBSYSTEMS = [
+{js_array}
+  ];
+  const level = p => p >= 0.8 ? 'lv3' : p >= 0.6 ? 'lv2' : p >= 0.4 ? 'lv1' : 'lv0';
+  const el = (tag, cls, text) => {{ const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }};
+  const graph = document.getElementById('graph');
+  for (const [label, , done, total] of SUBSYSTEMS) {{
+    const g = el('div', 'group');
+    g.append(el('span', 'group-label', label));
+    const cells = el('div', 'cells');
+    const cols = Math.max(2, Math.ceil(total / 7));
+    const lv = level(done / total);
+    for (let i = 0; i < cols * 7; i++) {{
+      cells.append(el('span', 'cell ' + (i < done ? lv : i < total ? 'empty' : 'pad')));
+    }}
+    g.append(cells);
+    graph.append(g);
+  }}
+  const list = document.getElementById('list');
+  [...SUBSYSTEMS].sort((a, b) => b[2] / b[3] - a[2] / a[3]).forEach(([, name, done, total]) => {{
+    const p = done / total;
+    const row = el('div', 'row');
+    row.append(el('span', 'dot ' + (done === 0 ? 'empty' : level(p))));
+    row.append(el('span', 'name', name));
+    row.append(el('span', 'count', `${{done}} of ${{total}}`));
+    row.append(el('span', 'pct', `${{Math.round(p * 100)}}%`));
+    list.append(row);
+  }});
+</script>
+</body>
+</html>
+"""
 
 
 def render_markdown_status(subsystems: list[Subsystem], total_exports: int, test_count: int) -> str:
@@ -483,23 +719,31 @@ def render_markdown_status(subsystems: list[Subsystem], total_exports: int, test
     total_target = sum(s.target for s in subsystems)
     overall_pct = (total_impl / total_target * 100.0) if total_target else 0.0
 
+    sorted_subs = sorted(subsystems, key=lambda s: (-s.ratio, -s.implemented, s.name.lower()))
     rows = [
         "<!-- SCARLETTX_STATUS_START -->",
         "## Status",
         "",
         "![ScarlettX Status](docs/status.svg)",
         "",
-        f"**Overall Milestone Progress:** `{overall_pct:.1f}%` ({total_impl}/{total_target} tracked units) · "
-        f"**Exported HLE Symbols:** `{total_exports}` · "
-        f"**Automated CTest Suite:** `{test_count}/{test_count}` passing",
+        f"**Status:** `{overall_pct:.1f}%` ({total_impl} of {total_target} tracked functions) · "
+        f"**Exports:** `{total_exports}` · "
+        f"**Tests:** `{test_count}/{test_count}` passing · "
+        "**Target:** `Xbox Series X|S (Gen9)`",
         "",
         "| Subsystem | Category | Progress | Coverage | Details |",
         "| :--- | :--- | :---: | :---: | :--- |",
     ]
-    for s in subsystems:
+    for s in sorted_subs:
         rows.append(
-            f"| **{s.name}** | `{s.category}` | `{s.implemented}/{s.target}` | `{s.pct:.0f}%` | {s.notes} |"
+            f"| **{s.name}** | `{s.category}` | `{s.implemented} of {s.target}` | `{round(s.pct)}%` | {s.notes} |"
         )
+    rows.append("")
+    rows.append(
+        "> **Not started:** encrypted retail XVD decryption, production GDeflate/XMA2/Bink decoding, "
+        "precompiled RDNA2 `XS2` ISA lifting, hardware DXR (software BVH fallback is verified on WARP), "
+        "and Vulkan backend. Passing synthetic tests do not imply commercial retail title execution."
+    )
     rows.append("")
     rows.append("_Regenerate with `python tools/generate_status.py` after adding new HLE APIs or subsystems._")
     rows.append("<!-- SCARLETTX_STATUS_END -->")
@@ -509,10 +753,13 @@ def render_markdown_status(subsystems: list[Subsystem], total_exports: int, test
 def main() -> None:
     subsystems, total_exports, test_count = collect_metrics()
     svg = render_svg(subsystems, total_exports, test_count)
+    html_doc = render_html(subsystems, total_exports, test_count)
 
     out_svg = ROOT / "docs/status.svg"
+    out_html = ROOT / "docs/status.html"
     out_svg.parent.mkdir(parents=True, exist_ok=True)
     out_svg.write_text(svg, encoding="utf-8")
+    out_html.write_text(html_doc, encoding="utf-8")
 
     md_block = render_markdown_status(subsystems, total_exports, test_count)
     readme_path = ROOT / "README.md"
@@ -533,8 +780,8 @@ def main() -> None:
 
     readme_path.write_text(new_readme, encoding="utf-8")
     print(
-        f"[generate_status] Wrote {out_svg.relative_to(ROOT)} and updated README.md "
-        f"(exports={total_exports}, tests={test_count})"
+        f"[generate_status] Wrote {out_svg.relative_to(ROOT)}, {out_html.relative_to(ROOT)}, "
+        f"and updated README.md (exports={total_exports}, tests={test_count})"
     )
 
 

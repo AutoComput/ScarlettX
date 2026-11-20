@@ -88,12 +88,49 @@ set_target_properties(GameInput PROPERTIES PREFIX "" OUTPUT_NAME "GameInput")
 target_link_libraries(GameInput PRIVATE scarlettx_core)
 target_compile_definitions(GameInput PRIVATE SCARLETTX_BUILDING_GAMEINPUT=1)
 
+add_library(Bink2Scarlett SHARED src/shims/bink2_scarlett_shim.cpp)
+set_target_properties(Bink2Scarlett PROPERTIES PREFIX "" OUTPUT_NAME "Bink2Scarlett")
+target_link_libraries(Bink2Scarlett PRIVATE scarlettx_core)
+target_compile_definitions(Bink2Scarlett PRIVATE SCARLETTX_BUILDING_BINK2=1)
+
+add_library(amd_fidelityfx_upscaler_xbox SHARED src/shims/ffx_upscaler_shim.cpp)
+set_target_properties(amd_fidelityfx_upscaler_xbox PROPERTIES PREFIX "" OUTPUT_NAME "amd_fidelityfx_upscaler_xbox")
+target_link_libraries(amd_fidelityfx_upscaler_xbox PRIVATE scarlettx_core)
+target_compile_definitions(amd_fidelityfx_upscaler_xbox PRIVATE SCARLETTX_BUILDING_FFX_UPSCALER=1)
+
+add_library(amd_fidelityfx_loader_xbox SHARED src/shims/ffx_loader_shim.cpp)
+set_target_properties(amd_fidelityfx_loader_xbox PROPERTIES PREFIX "" OUTPUT_NAME "amd_fidelityfx_loader_xbox")
+target_link_libraries(amd_fidelityfx_loader_xbox PRIVATE scarlettx_core amd_fidelityfx_upscaler_xbox)
+target_compile_definitions(amd_fidelityfx_loader_xbox PRIVATE SCARLETTX_BUILDING_FFX_LOADER=1)
+
+add_library(libHttpClient_GDK SHARED src/shims/libhttpclient_shim.cpp)
+set_target_properties(libHttpClient_GDK PROPERTIES PREFIX "" OUTPUT_NAME "libHttpClient.GDK")
+target_link_libraries(libHttpClient_GDK PRIVATE scarlettx_core xgameruntime)
+target_compile_definitions(libHttpClient_GDK PRIVATE SCARLETTX_BUILDING_LIBHTTPCLIENT=1)
+
+add_library(XCurl SHARED src/shims/xcurl_shim.cpp)
+set_target_properties(XCurl PROPERTIES PREFIX "" OUTPUT_NAME "XCurl")
+target_link_libraries(XCurl PRIVATE scarlettx_core)
+target_compile_definitions(XCurl PRIVATE SCARLETTX_BUILDING_XCURL=1)
+
 # ---------------------------------------------------------------------------
 # ScarlettX CLI Emulator Runner
 # ---------------------------------------------------------------------------
 add_executable(scarlettx src/main.cpp)
 target_link_libraries(scarlettx PRIVATE scarlettx_core)
-add_dependencies(scarlettx d3d12_xs xgameruntime XboxBvhBuilder dstorage xaudio2_9 GameInput)
+add_dependencies(scarlettx
+    d3d12_xs
+    xgameruntime
+    XboxBvhBuilder
+    dstorage
+    xaudio2_9
+    GameInput
+    Bink2Scarlett
+    amd_fidelityfx_upscaler_xbox
+    amd_fidelityfx_loader_xbox
+    libHttpClient_GDK
+    XCurl
+)
 
 # ---------------------------------------------------------------------------
 # Synthetic Scarlett GDK Test Games (compile as real x86-64 PEs linking HLE DLLs)
@@ -241,6 +278,19 @@ scarlettx_add_test(test_xaudio2 tests/test_xaudio2.cpp)
 target_link_libraries(test_xaudio2 PRIVATE xaudio2_9)
 scarlettx_add_test(test_gameinput tests/test_gameinput.cpp)
 target_link_libraries(test_gameinput PRIVATE GameInput)
+
+scarlettx_add_test(test_shader_pipeline tests/test_shader_pipeline.cpp)
+target_link_libraries(test_shader_pipeline PRIVATE d3d12_xs)
+
+scarlettx_add_test(test_middleware_net tests/test_middleware_net.cpp)
+target_link_libraries(test_middleware_net PRIVATE
+    Bink2Scarlett
+    amd_fidelityfx_loader_xbox
+    amd_fidelityfx_upscaler_xbox
+    libHttpClient_GDK
+    XCurl
+    xgameruntime
+)
 
 scarlettx_add_test(test_scarlett_arena_e2e tests/test_scarlett_arena_e2e.cpp)
 target_link_libraries(test_scarlett_arena_e2e PRIVATE dstorage)

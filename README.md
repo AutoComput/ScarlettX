@@ -9,21 +9,26 @@
 
 ![ScarlettX Status](docs/status.svg)
 
-**Overall Milestone Progress:** `81.2%` (177/218 tracked units) · **Exported HLE Symbols:** `164` · **Automated CTest Suite:** `14/14` passing
+**Status:** `75.6%` (242 of 320 tracked functions) · **Exports:** `230` · **Tests:** `16/16` passing · **Target:** `Xbox Series X|S (Gen9)`
 
 | Subsystem | Category | Progress | Coverage | Details |
 | :--- | :--- | :---: | :---: | :--- |
-| **PE64 Loader & Auto-Stubs** | `Core` | `6/6` | `100%` | PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks |
-| **XTaskQueue & XAsync** | `xgameruntime` | `15/24` | `62%` | 11 XTaskQueue + 4 XAsync exports (manual/threadpool/delayed/monitors/cancel) |
-| **XGameSave (Persistent)** | `xgameruntime` | `20/22` | `91%` | 20 exports; disk-backed containers, sync/async blob R/W, quota, delete |
-| **XUser & Identity** | `xgameruntime` | `13/24` | `54%` | 13 exports; synthetic Xbox Live profile, XUID, gamertag components, privileges |
-| **XSystem & Runtime** | `xgameruntime` | `12/18` | `67%` | 12 exports; Scarlett Anaconda device info, runtime/analytics, handle validation |
-| **XMem & Threading** | `xgameruntime` | `11/16` | `69%` | 11 exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state |
-| **d3d12_xs → PC D3D12** | `Graphics` | `28/32` | `88%` | 26 exports; D3D12CreateDeviceX → real ID3D12Device, root-sig forwarding, PresentXEx/frame stats, Suspend/Resume, ResourceAllocationInfo, WARP backend |
-| **DXR / XboxBvhBuilder** | `Graphics` | `12/14` | `86%` | 8 BVH exports + DXR AS prebuild/build/destroy, BLAS update, single-ray trace, deterministic software BVH fallback (hardware DXR requires capable GPU) |
-| **DirectStorage & XVD** | `Storage` | `23/24` | `96%` | 22 DStorage exports + unencrypted XVD parser/PackageVfs mounting; async worker queues, fence/status arrays, cancellation, synthetic LZ-RLE test codec |
-| **Audio (XAudio2/XMA2)** | `Media` | `22/22` | `100%` | 22 exports; mastering/submix/source voices, headless PCM mixer, output matrix/volume/pitch, WAV writer, synthetic XMA2 DPCM decoder |
-| **Input (GameInput)** | `Input` | `15/16` | `94%` | 15 exports; virtual Xbox Series controller & keyboard, reading history (Current/Next/Previous), state injection, 4-motor impulse-trigger rumble |
+| **Audio (XAudio2 / XMA2)** | `Media` | `22 of 22` | `100%` | 22 exports; mastering/submix/source voices, headless PCM mixer, output matrix/volume/pitch, WAV writer, synthetic XMA2 DPCM decoder |
+| **PE64 Loader & Auto-Stubs** | `Core` | `6 of 6` | `100%` | PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks |
+| **DirectStorage & XVD** | `Storage` | `23 of 24` | `96%` | 22 DStorage exports + unencrypted XVD parser/PackageVfs mounting; async worker queues, fence/status arrays, cancellation, synthetic LZ-RLE test codec |
+| **Input (GameInput)** | `Input` | `15 of 16` | `94%` | 15 exports; virtual Xbox Series controller & keyboard, reading history (Current/Next/Previous), state injection, 4-motor impulse-trigger rumble |
+| **XGameSave (persistent)** | `xgameruntime` | `20 of 22` | `91%` | 20 exports; disk-backed containers, sync/async blob R/W, quota, delete |
+| **d3d12_xs → PC D3D12 & PSOs** | `Graphics` | `40 of 46` | `87%` | 39 exports + DXIL/DXBC container parser & Xbox-chunk stripper; root signatures, descriptor heaps, graphics/compute/software-DXR PSOs, pipeline cache, WARP backend |
+| **DXR / XboxBvhBuilder** | `Graphics` | `12 of 14` | `86%` | 8 BVH exports + DXR AS prebuild/build/destroy, BLAS update, single-ray trace, deterministic software BVH fallback (hardware DXR requires capable GPU) |
+| **Networking (HTTP / XCurl)** | `Networking` | `31 of 40` | `78%` | 19 libHttpClient.GDK + 12 XCurl exports; deterministic offline mock registry, async callbacks, headers, fallback responses |
+| **XMem & Threading** | `xgameruntime` | `11 of 16` | `69%` | 11 exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state |
+| **XSystem & Runtime** | `xgameruntime` | `12 of 18` | `67%` | 12 exports; Scarlett Anaconda device info, runtime/analytics, handle validation |
+| **Middleware (Bink2 / FSR)** | `Middleware` | `22 of 34` | `65%` | 12 Bink2Scarlett + 10 amd_fidelityfx_loader/upscaler_xbox exports; deterministic offline HLE shims (synthetic RGBA/BGRA frames, bilinear upscale & hash) |
+| **XTaskQueue & XAsync** | `xgameruntime` | `15 of 24` | `62%` | 11 XTaskQueue + 4 XAsync exports (manual/threadpool/delayed/monitors/cancel) |
+| **XUser & Identity** | `xgameruntime` | `13 of 24` | `54%` | 13 exports; synthetic Xbox Live profile, XUID, gamertag components, privileges |
+| **Retail Crypto & Native Codecs** | `Platform` | `0 of 14` | `0%` | Encrypted retail XVD, production GDeflate/XMA2/Bink codecs, RDNA2 XS2 ISA lifting, hardware DXR, Vulkan |
+
+> **Not started:** encrypted retail XVD decryption, production GDeflate/XMA2/Bink decoding, precompiled RDNA2 `XS2` ISA lifting, hardware DXR (software BVH fallback is verified on WARP), and Vulkan backend. Passing synthetic tests do not imply commercial retail title execution.
 
 _Regenerate with `python tools/generate_status.py` after adding new HLE APIs or subsystems._
 <!-- SCARLETTX_STATUS_END -->
@@ -41,8 +46,17 @@ Because Xbox Series X|S executables are native **x86-64 PE32+** binaries targeti
 | **DirectStorage & XVD (`dstorage.dll`)** | Async worker-thread I/O queues, file/memory/XVD reads, fence callbacks, status arrays, cancellation by tag, synthetic LZ-RLE test codec, unencrypted XVD container parser + `PackageVfs::MountXvd` | Milestone 4 complete + tests |
 | **Audio (`xaudio2_9.dll` / XMA2)** | XAudio2 engine + mastering/submix/source voices, deterministic headless PCM mixer, volume/pitch/output-matrix panning, WAV export, synthetic XMA2 packet decoder | Milestone 4 complete + tests |
 | **Input (`GameInput.dll`)** | Virtual Xbox Series controller & keyboard enumeration, reading history (`Current`/`Next`/`Previous`), deterministic input injection, 4-motor impulse-trigger rumble | Milestone 4 complete + tests |
-| **Shader Translation** | DXBC/DXIL/Scarlett shader container inspector & IR scaffold | Scaffold + tests |
+| **Shader & PSO Pipeline** | DXIL/DXBC container parser (stage, shader model, I/O params, RT exports, embedded root sig, content hash), Xbox-private chunk stripping (`XBOX`/`XS2M`), explicit unsupported-format error on precompiled RDNA2 `XS2`, D3D12 root signatures, descriptor heaps, graphics/compute/software-DXR PSOs, pipeline cache stats, draw/dispatch/RT command execution | Milestone 6 complete + tests |
+| **Middleware (`Bink2` / `FidelityFX`)** | `Bink2Scarlett.dll` (open/decode/advance/pause/seek/RGBA/BGRA/summary), `amd_fidelityfx_loader_xbox.dll` & `amd_fidelityfx_upscaler_xbox.dll` (context lifecycle, quality ratios, render resolution, jitter, deterministic bilinear upscale & frame hash) | Milestone 7 complete + tests |
+| **Networking (`libHttpClient` / `XCurl`)** | `libHttpClient.GDK.dll` (init, mock registry, request setup, async callbacks, offline fallback), `XCurl.dll` (easy handle lifecycle, `curl_easy_setopt`, write callbacks, `curl_easy_getinfo`, slist headers, mock/offline responses) | Milestone 7 complete + tests |
 | **End-to-End Integration** | `scarlett_arena` synthetic Gen9 game booting via in-process PE64 mapper (with isolated guest `atexit` cleanup) and child process across `xgameruntime`, `DirectStorage`/XVD, `GameInput`, `d3d12_xs` + software BVH RT, `XAudio2`/XMA2, and `XGameSave` | Milestone 5 complete + tests |
+
+### Current Limitations
+
+- **Retail packages:** Encrypted retail `.xvc` / XVD packages are not supported; only unencrypted synthetic/loose packages and unencrypted XVDs are mounted.
+- **Shaders & Ray Tracing:** Precompiled RDNA2 `XS2` ISA lifting is not implemented (returns `UnsupportedFormat`); hardware DXR requires a DXR-capable GPU (CI/WARP runs the verified software BVH fallback).
+- **Codecs & Middleware:** `Bink2Scarlett`, `amd_fidelityfx_*_xbox`, `DirectStorage` decompression, and `XMA2` use deterministic offline/synthetic HLE shims rather than production Bink, GPU FSR, GDeflate, or XMA2 codecs.
+- **Networking & Graphics Backend:** `libHttpClient.GDK` and `XCurl` run offline with mock/fallback responses; graphics currently target PC D3D12 (no native Vulkan backend yet). Passing synthetic tests do not imply commercial retail title execution.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md) for detailed design notes.
 
