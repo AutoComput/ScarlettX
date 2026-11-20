@@ -15,6 +15,7 @@ add_library(scarlettx_core STATIC
     src/loader/pe_mapper.cpp
     src/loader/stub_thunk.cpp
     src/loader/package_vfs.cpp
+    src/loader/xvd_container.cpp
     src/kernel/xmemory.cpp
     src/kernel/xruntime.cpp
     src/kernel/xstorage.cpp
@@ -72,12 +73,27 @@ set_target_properties(XboxBvhBuilder PROPERTIES PREFIX "" OUTPUT_NAME "XboxBvhBu
 target_link_libraries(XboxBvhBuilder PRIVATE scarlettx_core)
 target_compile_definitions(XboxBvhBuilder PRIVATE SCARLETTX_BUILDING_XBOX_BVH=1)
 
+add_library(dstorage SHARED src/shims/dstorage_shim.cpp)
+set_target_properties(dstorage PROPERTIES PREFIX "" OUTPUT_NAME "dstorage")
+target_link_libraries(dstorage PRIVATE scarlettx_core)
+target_compile_definitions(dstorage PRIVATE SCARLETTX_BUILDING_DSTORAGE=1)
+
+add_library(xaudio2_9 SHARED src/shims/xaudio2_shim.cpp)
+set_target_properties(xaudio2_9 PROPERTIES PREFIX "" OUTPUT_NAME "xaudio2_9")
+target_link_libraries(xaudio2_9 PRIVATE scarlettx_core)
+target_compile_definitions(xaudio2_9 PRIVATE SCARLETTX_BUILDING_XAUDIO2=1)
+
+add_library(GameInput SHARED src/shims/gameinput_shim.cpp)
+set_target_properties(GameInput PROPERTIES PREFIX "" OUTPUT_NAME "GameInput")
+target_link_libraries(GameInput PRIVATE scarlettx_core)
+target_compile_definitions(GameInput PRIVATE SCARLETTX_BUILDING_GAMEINPUT=1)
+
 # ---------------------------------------------------------------------------
 # ScarlettX CLI Emulator Runner
 # ---------------------------------------------------------------------------
 add_executable(scarlettx src/main.cpp)
 target_link_libraries(scarlettx PRIVATE scarlettx_core)
-add_dependencies(scarlettx d3d12_xs xgameruntime XboxBvhBuilder)
+add_dependencies(scarlettx d3d12_xs xgameruntime XboxBvhBuilder dstorage xaudio2_9 GameInput)
 
 # ---------------------------------------------------------------------------
 # Synthetic Scarlett GDK Test Games (compile as real x86-64 PEs linking HLE DLLs)
@@ -188,6 +204,12 @@ scarlettx_add_test(test_d3d12_warp tests/test_d3d12_warp.cpp)
 scarlettx_add_test(test_d3d12_xs_abi tests/test_d3d12_xs_abi.cpp)
 target_link_libraries(test_d3d12_xs_abi PRIVATE d3d12_xs XboxBvhBuilder)
 scarlettx_add_test(test_rt_pipeline tests/test_rt_pipeline.cpp)
+scarlettx_add_test(test_dstorage_xvd tests/test_dstorage_xvd.cpp)
+target_link_libraries(test_dstorage_xvd PRIVATE dstorage)
+scarlettx_add_test(test_xaudio2 tests/test_xaudio2.cpp)
+target_link_libraries(test_xaudio2 PRIVATE xaudio2_9)
+scarlettx_add_test(test_gameinput tests/test_gameinput.cpp)
+target_link_libraries(test_gameinput PRIVATE GameInput)
 
 add_test(
     NAME test_boot_hello_scarlett

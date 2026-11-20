@@ -45,6 +45,9 @@ def count_exported_symbols(header: pathlib.Path, macro: str, prefix: str) -> int
 def collect_metrics() -> tuple[list[Subsystem], int, int]:
     xgr_hdr = ROOT / "include/scarlettx/gdk/xgameruntime_abi.h"
     d3d_hdr = ROOT / "include/scarlettx/gpu/d3d12_xs_abi.h"
+    ds_hdr = ROOT / "include/scarlettx/io/dstorage_abi.h"
+    xa_hdr = ROOT / "include/scarlettx/audio/xaudio2_abi.h"
+    gi_hdr = ROOT / "include/scarlettx/input/gameinput_abi.h"
     cmake_txt = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8", errors="ignore")
 
     # Count real CTest registrations
@@ -69,6 +72,11 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
 
     d3d_cnt = count_exported_symbols(d3d_hdr, "SCARLETTX_D3D12_API", "D3D12")
     bvh_cnt = count_exported_symbols(d3d_hdr, "SCARLETTX_BVH_API", "XboxBvh")
+    ds_cnt = count_exported_symbols(ds_hdr, "SCARLETTX_DSTORAGE_API", "DStorage")
+    xa_cnt = count_exported_symbols(xa_hdr, "SCARLETTX_XAUDIO2_API", "XAudio2") + count_exported_symbols(
+        xa_hdr, "SCARLETTX_XAUDIO2_API", "Xma2"
+    )
+    gi_cnt = count_exported_symbols(gi_hdr, "SCARLETTX_GAMEINPUT_API", "GameInput")
 
     total_exports = (
         xruntime_cnt
@@ -80,6 +88,9 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
         + xmem_cnt
         + d3d_cnt
         + bvh_cnt
+        + ds_cnt
+        + xa_cnt
+        + gi_cnt
     )
 
     loader_features = sum(
@@ -90,6 +101,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             "src/loader/pe_mapper.cpp",
             "src/loader/stub_thunk.cpp",
             "src/loader/package_vfs.cpp",
+            "src/loader/xvd_container.cpp",
         ]
         if (ROOT / rel).exists()
     )
@@ -169,25 +181,34 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             name="DirectStorage & XVD",
             short_name="DStorage",
             category="Storage",
-            implemented=2 if (ROOT / "src/kernel/xstorage.cpp").exists() else 0,
-            target=14,
-            notes="XStorage async I/O scaffold; DirectStorage queues & XVD mounting planned (Milestone 4)",
+            implemented=ds_cnt + (1 if (ROOT / "src/loader/xvd_container.cpp").exists() else 0),
+            target=24,
+            notes=(
+                f"{ds_cnt} DStorage exports + unencrypted XVD parser/PackageVfs mounting; "
+                "async worker queues, fence/status arrays, cancellation, synthetic LZ-RLE test codec"
+            ),
         ),
         Subsystem(
             name="Audio (XAudio2/XMA2)",
             short_name="Audio",
             category="Media",
-            implemented=0,
-            target=12,
-            notes="XAudio2 / XMA2 / Bink2Scarlett shims planned (Milestone 4)",
+            implemented=xa_cnt,
+            target=22,
+            notes=(
+                f"{xa_cnt} exports; mastering/submix/source voices, headless PCM mixer, "
+                "output matrix/volume/pitch, WAV writer, synthetic XMA2 DPCM decoder"
+            ),
         ),
         Subsystem(
             name="Input (GameInput)",
             short_name="GameInput",
             category="Input",
-            implemented=0,
-            target=10,
-            notes="GameInput / Xbox controller HLE planned (Milestone 4)",
+            implemented=gi_cnt,
+            target=16,
+            notes=(
+                f"{gi_cnt} exports; virtual Xbox Series controller & keyboard, reading history "
+                "(Current/Next/Previous), state injection, 4-motor impulse-trigger rumble"
+            ),
         ),
     ]
 
