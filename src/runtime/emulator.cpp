@@ -80,6 +80,11 @@ Status Emulator::BootPackage(const std::string& package_dir) {
         }
     }
 
+    auto set_env = [](const char* key, const char* value) {
+        SetEnvironmentVariableA(key, value);
+        _putenv_s(key, value);
+    };
+
     if (!shim_dir.empty()) {
         std::string new_path = shim_dir;
         const char* cur_path = std::getenv("PATH");
@@ -87,19 +92,19 @@ Status Emulator::BootPackage(const std::string& package_dir) {
             new_path += ";";
             new_path += cur_path;
         }
-        SetEnvironmentVariableA("PATH", new_path.c_str());
+        set_env("PATH", new_path.c_str());
     }
 
-    SetEnvironmentVariableA("SCARLETTX_HEADLESS", config_.headless ? "1" : "0");
-    SetEnvironmentVariableA("SCARLETTX_PREFER_WARP", config_.prefer_warp ? "1" : "0");
+    set_env("SCARLETTX_HEADLESS", config_.headless ? "1" : "0");
+    set_env("SCARLETTX_PREFER_WARP", config_.prefer_warp ? "1" : "0");
     if (config_.max_frames > 0) {
-        SetEnvironmentVariableA("SCARLETTX_MAX_FRAMES", std::to_string(config_.max_frames).c_str());
+        set_env("SCARLETTX_MAX_FRAMES", std::to_string(config_.max_frames).c_str());
     }
     if (!config_.rt_dump_path.empty()) {
-        SetEnvironmentVariableA("SCARLETTX_RT_DUMP", config_.rt_dump_path.c_str());
+        set_env("SCARLETTX_RT_DUMP", config_.rt_dump_path.c_str());
     }
     if (!config_.raster_dump_path.empty()) {
-        SetEnvironmentVariableA("SCARLETTX_RASTER_DUMP", config_.raster_dump_path.c_str());
+        set_env("SCARLETTX_RASTER_DUMP", config_.raster_dump_path.c_str());
     }
 
     if (config_.in_process) {

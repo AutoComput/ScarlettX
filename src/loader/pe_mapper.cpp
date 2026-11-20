@@ -5,7 +5,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -36,6 +38,52 @@ std::string MakeOrdinalKey(const std::string& dll, uint16_t ordinal) {
 }
 
 #if defined(_WIN32)
+using GuestAtExitFn = void(__cdecl*)();
+
+std::mutex& GuestAtExitMutex() {
+    static std::mutex m;
+    return m;
+}
+
+std::vector<GuestAtExitFn>& GuestAtExitTable() {
+    static std::vector<GuestAtExitFn> table;
+    return table;
+}
+
+int __cdecl GuestIsolatedAtExit(GuestAtExitFn fn) {
+    if (!fn) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(GuestAtExitMutex());
+    GuestAtExitTable().push_back(fn);
+    return 0;
+}
+
+void RunAndClearGuestAtExitInRange(const uint8_t* base, size_t size) {
+    if (!base || size == 0) {
+        return;
+    }
+    const uintptr_t lo = reinterpret_cast<uintptr_t>(base);
+    const uintptr_t hi = lo + size;
+    std::vector<GuestAtExitFn> to_run;
+    {
+        std::lock_guard<std::mutex> lock(GuestAtExitMutex());
+        auto& table = GuestAtExitTable();
+        for (auto it = table.rbegin(); it != table.rend();) {
+            const uintptr_t addr = reinterpret_cast<uintptr_t>(*it);
+            if (addr >= lo && addr < hi) {
+                to_run.push_back(*it);
+                it = std::vector<GuestAtExitFn>::reverse_iterator(table.erase(std::next(it).base()));
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (GuestAtExitFn fn : to_run) {
+        fn();
+    }
+}
+
 DWORD SectionCharsToPageProtect(uint32_t ch) {
     const bool exec = (ch & IMAGE_SCN_MEM_EXECUTE) != 0;
     const bool read = (ch & IMAGE_SCN_MEM_READ) != 0;
@@ -105,6 +153,9 @@ MappedPeImage::~MappedPeImage() {
 
 void MappedPeImage::Unmap() {
 #if defined(_WIN32)
+    if (mapped_base_ && size_of_image_ > 0) {
+        RunAndClearGuestAtExitInRange(mapped_base_, size_of_image_);
+    }
     if (mapped_base_ && is_dll_ && dll_attached_ && entry_point_rva_ != 0) {
         using DllMainFn = BOOL(WINAPI*)(HINSTANCE, DWORD, LPVOID);
         auto fn = reinterpret_cast<DllMainFn>(mapped_base_ + entry_point_rva_);
@@ -350,6 +401,18 @@ Status MappedPeImage::MapFile(const std::string& pe_path,
                     }
                     if (resolved) {
                         res.kind = ImportResolutionKind::HleRegistry;
+                    }
+
+                    // (a.5) Isolate guest CRT atexit registrations so unmapping the image
+                    // never leaves dangling function pointers in the host ucrtbase table.
+                    if (!resolved && !by_ordinal) {
+                        const std::string target_lower = ToLowerAscii(target_dll);
+                        if ((target_lower == "ucrtbase.dll" || target_lower == "msvcrt.dll") &&
+                            (sym_name == "_crt_atexit" || sym_name == "atexit" ||
+                             sym_name == "_crt_at_quick_exit")) {
+                            resolved = reinterpret_cast<void*>(&GuestIsolatedAtExit);
+                            res.kind = ImportResolutionKind::HleRegistry;
+                        }
                     }
 
                     // (b) Check host / HLE shim DLL via LoadLibrary + GetProcAddress.

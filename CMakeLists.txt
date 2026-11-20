@@ -171,6 +171,37 @@ if(WIN32)
     )
 endif()
 
+# Synthetic Scarlett Game 4: scarlett_arena (full-stack Gen9 E2E demo)
+add_executable(scarlett_arena tests/synthetic_games/scarlett_arena/main.cpp)
+target_link_libraries(scarlett_arena PRIVATE
+    xgameruntime
+    d3d12_xs
+    XboxBvhBuilder
+    dstorage
+    xaudio2_9
+    GameInput
+)
+target_include_directories(scarlett_arena PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+if(MINGW)
+    target_link_options(scarlett_arena PRIVATE -Wl,--dynamicbase)
+endif()
+set_target_properties(scarlett_arena PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/packages/scarlett_arena"
+)
+add_custom_command(TARGET scarlett_arena POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/synthetic_games/scarlett_arena/MicrosoftGame.Config"
+        "$<TARGET_FILE_DIR:scarlett_arena>/MicrosoftGame.Config"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:xgameruntime>"
+        "$<TARGET_FILE:d3d12_xs>"
+        "$<TARGET_FILE:XboxBvhBuilder>"
+        "$<TARGET_FILE:dstorage>"
+        "$<TARGET_FILE:xaudio2_9>"
+        "$<TARGET_FILE:GameInput>"
+        "$<TARGET_FILE_DIR:scarlett_arena>"
+)
+
 # ---------------------------------------------------------------------------
 # Autonomous Test Suite
 # ---------------------------------------------------------------------------
@@ -210,6 +241,18 @@ scarlettx_add_test(test_xaudio2 tests/test_xaudio2.cpp)
 target_link_libraries(test_xaudio2 PRIVATE xaudio2_9)
 scarlettx_add_test(test_gameinput tests/test_gameinput.cpp)
 target_link_libraries(test_gameinput PRIVATE GameInput)
+
+scarlettx_add_test(test_scarlett_arena_e2e tests/test_scarlett_arena_e2e.cpp)
+target_link_libraries(test_scarlett_arena_e2e PRIVATE dstorage)
+add_dependencies(test_scarlett_arena_e2e
+    scarlett_arena
+    xgameruntime
+    d3d12_xs
+    XboxBvhBuilder
+    dstorage
+    xaudio2_9
+    GameInput
+)
 
 add_test(
     NAME test_boot_hello_scarlett

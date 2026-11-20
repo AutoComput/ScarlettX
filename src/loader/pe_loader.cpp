@@ -96,9 +96,13 @@ DllRedirectionTable::DllRedirectionTable() {
     RegisterRedirect("d3d12_xs.dll", "d3d12_xs.dll", true);
     RegisterRedirect("xgameruntime.dll", "xgameruntime.dll", true);
     RegisterRedirect("xboxbvhbuilder.dll", "XboxBvhBuilder.dll", true);
+    RegisterRedirect("dstorage.dll", "dstorage.dll", true);
+    RegisterRedirect("dstoragecore.dll", "dstorage.dll", true);
+    RegisterRedirect("xaudio2_9.dll", "xaudio2_9.dll", true);
+    RegisterRedirect("xaudio2_9redist.dll", "xaudio2_9.dll", true);
+    RegisterRedirect("gameinput.dll", "GameInput.dll", true);
     RegisterRedirect("xcurl.dll", "libcurl.dll", true);
     RegisterRedirect("pixevt.dll", "pixevt_stub.dll", true);
-    RegisterRedirect("xaudio2_9redist.dll", "xaudio2_9.dll", true);
     RegisterRedirect("bink2scarlett.dll", "bink2scarlett.dll", false);
 }
 

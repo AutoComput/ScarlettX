@@ -9,7 +9,7 @@
 
 ![ScarlettX Status](docs/status.svg)
 
-**Overall Milestone Progress:** `81.2%` (177/218 tracked units) · **Exported HLE Symbols:** `164` · **Automated CTest Suite:** `13/13` passing
+**Overall Milestone Progress:** `81.2%` (177/218 tracked units) · **Exported HLE Symbols:** `164` · **Automated CTest Suite:** `14/14` passing
 
 | Subsystem | Category | Progress | Coverage | Details |
 | :--- | :--- | :---: | :---: | :--- |
@@ -42,6 +42,7 @@ Because Xbox Series X|S executables are native **x86-64 PE32+** binaries targeti
 | **Audio (`xaudio2_9.dll` / XMA2)** | XAudio2 engine + mastering/submix/source voices, deterministic headless PCM mixer, volume/pitch/output-matrix panning, WAV export, synthetic XMA2 packet decoder | Milestone 4 complete + tests |
 | **Input (`GameInput.dll`)** | Virtual Xbox Series controller & keyboard enumeration, reading history (`Current`/`Next`/`Previous`), deterministic input injection, 4-motor impulse-trigger rumble | Milestone 4 complete + tests |
 | **Shader Translation** | DXBC/DXIL/Scarlett shader container inspector & IR scaffold | Scaffold + tests |
+| **End-to-End Integration** | `scarlett_arena` synthetic Gen9 game booting via in-process PE64 mapper (with isolated guest `atexit` cleanup) and child process across `xgameruntime`, `DirectStorage`/XVD, `GameInput`, `d3d12_xs` + software BVH RT, `XAudio2`/XMA2, and `XGameSave` | Milestone 5 complete + tests |
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md) for detailed design notes.
 
@@ -70,4 +71,7 @@ ctest --test-dir build --output-on-failure
 
 # Boot the synthetic ray-tracing showcase and dump a rendered RT frame
 ./build/scarlettx boot build/packages/rt_showcase --headless --frames 2 --rt-dump rt_frame.ppm
+
+# Run the full-stack end-to-end synthetic game demo (PE64 + XVD/DirectStorage + GameInput + D3D12/BVH RT + XAudio2/XMA2 + XGameSave)
+./build/test_scarlett_arena_e2e
 ```
