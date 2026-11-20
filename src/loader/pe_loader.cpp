@@ -94,10 +94,13 @@ struct PeImportDescriptorRaw {
 DllRedirectionTable::DllRedirectionTable() {
     // Core Xbox Series X|S (Scarlett / Game Core) HLE system DLLs.
     RegisterRedirect("d3d12_xs.dll", "d3d12_xs.dll", true);
+    RegisterRedirect("xg_xs.dll", "xg_xs.dll", true);
+    RegisterRedirect("acphal.dll", "AcpHal.dll", true);
     RegisterRedirect("xgameruntime.dll", "xgameruntime.dll", true);
     RegisterRedirect("xboxbvhbuilder.dll", "XboxBvhBuilder.dll", true);
-    RegisterRedirect("dstorage.dll", "dstorage.dll", true);
-    RegisterRedirect("dstoragecore.dll", "dstorage.dll", true);
+    RegisterRedirect("dstorage_xs.dll", "dstorage_xs.dll", true);
+    RegisterRedirect("dstorage.dll", "dstorage_xs.dll", true);
+    RegisterRedirect("dstoragecore.dll", "dstorage_xs.dll", true);
     RegisterRedirect("xaudio2_9.dll", "xaudio2_9.dll", true);
     RegisterRedirect("xaudio2_9redist.dll", "xaudio2_9.dll", true);
     RegisterRedirect("gameinput.dll", "GameInput.dll", true);

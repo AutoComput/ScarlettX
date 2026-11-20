@@ -125,7 +125,7 @@ int main() {
     dev_params.Version = 1;
     dev_params.PreferWarp = 1;
     uint64_t dev = 0;
-    SX_CHECK(D3D12XboxCreateDevice(&dev_params, &dev) == 0);
+    SX_CHECK(D3D12XboxCreateSyntheticDevice(&dev_params, &dev) == 0);
     SX_CHECK(dev != 0);
 
     // Descriptor heaps

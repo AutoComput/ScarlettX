@@ -99,6 +99,8 @@ def count_exported_symbols(header: pathlib.Path, macro: str, prefix: str) -> int
 def collect_metrics() -> tuple[list[Subsystem], int, int]:
     xgr_hdr = ROOT / "include/scarlettx/gdk/xgameruntime_abi.h"
     d3d_hdr = ROOT / "include/scarlettx/gpu/d3d12_xs_abi.h"
+    xg_hdr = ROOT / "include/scarlettx/gpu/xg_xs_abi.h"
+    acp_hdr = ROOT / "include/scarlettx/audio/acphal_abi.h"
     ds_hdr = ROOT / "include/scarlettx/io/dstorage_abi.h"
     xa_hdr = ROOT / "include/scarlettx/audio/xaudio2_abi.h"
     gi_hdr = ROOT / "include/scarlettx/input/gameinput_abi.h"
@@ -114,8 +116,13 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
         - 1
     )
 
-    xruntime_cnt = count_exported_symbols(xgr_hdr, "SCARLETTX_XGR_API", "XGameRuntime") + count_exported_symbols(
-        xgr_hdr, "SCARLETTX_XGR_API", "XGameGet"
+    xruntime_cnt = (
+        count_exported_symbols(xgr_hdr, "SCARLETTX_XGR_API", "XGameRuntime")
+        + count_exported_symbols(xgr_hdr, "SCARLETTX_XGR_API", "XGameGet")
+        + count_exported_symbols(xgr_hdr, "SCARLETTX_XGR_API", "XError")
+        + count_exported_symbols(xgr_hdr, "SCARLETTX_XGR_API", "InitializeApiImpl")
+        + count_exported_symbols(xgr_hdr, "SCARLETTX_XGR_API", "UninitializeApiImpl")
+        + count_exported_symbols(xgr_hdr, "SCARLETTX_XGR_API", "QueryApiImpl")
     )
     xtask_cnt = count_exported_symbols(xgr_hdr, "SCARLETTX_XGR_API", "XTaskQueue")
     xasync_cnt = count_exported_symbols(xgr_hdr, "SCARLETTX_XGR_API", "XAsync")
@@ -126,11 +133,17 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
         xgr_hdr, "SCARLETTX_XGR_API", "XThread"
     )
 
-    d3d_cnt = count_exported_symbols(d3d_hdr, "SCARLETTX_D3D12_API", "D3D12")
+    d3d_cnt = (
+        count_exported_symbols(d3d_hdr, "SCARLETTX_D3D12_API", "D3D12")
+        + count_exported_symbols(xg_hdr, "SCARLETTX_XG_API", "XG")
+    )
     bvh_cnt = count_exported_symbols(d3d_hdr, "SCARLETTX_BVH_API", "XboxBvh")
     ds_cnt = count_exported_symbols(ds_hdr, "SCARLETTX_DSTORAGE_API", "DStorage")
-    xa_cnt = count_exported_symbols(xa_hdr, "SCARLETTX_XAUDIO2_API", "XAudio2") + count_exported_symbols(
-        xa_hdr, "SCARLETTX_XAUDIO2_API", "Xma2"
+    xa_cnt = (
+        count_exported_symbols(xa_hdr, "SCARLETTX_XAUDIO2_API", "XAudio2")
+        + count_exported_symbols(xa_hdr, "SCARLETTX_XAUDIO2_API", "Xma2")
+        + count_exported_symbols(acp_hdr, "SCARLETTX_ACPHAL_API", "Apu")
+        + count_exported_symbols(acp_hdr, "SCARLETTX_ACPHAL_API", "AcpHal")
     )
     gi_cnt = count_exported_symbols(gi_hdr, "SCARLETTX_GAMEINPUT_API", "GameInput")
     bink_cnt = count_exported_symbols(bink_hdr, "SCARLETTX_BINK2_API", "Bink")
@@ -249,14 +262,14 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             ),
         ),
         Subsystem(
-            name="Audio (XAudio2 / XMA2)",
+            name="Audio (XAudio2 / AcpHal)",
             short_name="Audio",
             category="Media",
             implemented=xa_cnt,
-            target=22,
+            target=32,
             notes=(
-                f"{xa_cnt} exports; mastering/submix/source voices, headless PCM mixer, "
-                "output matrix/volume/pitch, WAV writer, synthetic XMA2 DPCM decoder"
+                f"{xa_cnt} exports (XAudio2_9 ordinal #1 + AcpHal.dll APU/SHAPE shims); "
+                "headless PCM mixer, WAV writer, fail-closed real-title COM guard, synthetic XMA2 test decoder"
             ),
         ),
         Subsystem(

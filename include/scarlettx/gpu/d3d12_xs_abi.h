@@ -189,12 +189,16 @@ struct SCARLETT_RAY_HIT {
 };
 
 // ---------------------------------------------------------------------------
-// d3d12_xs.dll — Standard PC D3D12 forwarding entry points
+// d3d12_xs.dll — Verified Xbox Series X|S entry points (from EmbeddedXvd)
 // ---------------------------------------------------------------------------
-SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12CreateDeviceX(
-    const D3D12XBOX_CREATE_DEVICE_PARAMETERS* params,
+SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12XboxCreateDevice(
+    void* pAdapter,
+    const D3D12XBOX_CREATE_DEVICE_PARAMETERS* pParameters,
     const void* riid,
     void** ppvDevice);
+SCARLETTX_D3D12_API void SCARLETTX_GDK_CALLBACK D3D12XboxSetProcessDebugFlags(
+    uint32_t flags);
+SCARLETTX_D3D12_API uint32_t SCARLETTX_GDK_CALLBACK D3D12XboxGetProcessDebugFlags(void);
 SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateDevice(
     void* pAdapter,
     uint32_t minimumFeatureLevel,
@@ -224,9 +228,9 @@ SCARLETTX_D3D12_API int32_t SCARLETTX_GDK_CALLBACK D3D12XsEnableExperimentalFeat
     uint32_t* pConfigurationStructSizes);
 
 // ---------------------------------------------------------------------------
-// d3d12_xs.dll — Scarlett device, frame pipeline & DXR translation exports
+// ScarlettX synthetic handle-based test harness APIs (NOT retail Xbox ABI)
 // ---------------------------------------------------------------------------
-SCARLETTX_D3D12_API int32_t D3D12XboxCreateDevice(
+SCARLETTX_D3D12_API int32_t D3D12XboxCreateSyntheticDevice(
     const D3D12XBOX_CREATE_DEVICE_PARAMETERS* params,
     uint64_t* out_device_handle);
 SCARLETTX_D3D12_API int32_t D3D12XboxDestroyDevice(uint64_t device_handle);
@@ -265,7 +269,7 @@ SCARLETTX_D3D12_API int32_t D3D12XboxRenderTestTriangle(
 SCARLETTX_D3D12_API int32_t D3D12XboxPresentX(
     uint64_t device_handle,
     const D3D12XBOX_PRESENT_PLANE_PARAMETERS* plane);
-SCARLETTX_D3D12_API int32_t D3D12XboxPresentXEx(
+SCARLETTX_D3D12_API int32_t D3D12XboxPresentXParams(
     uint64_t device_handle,
     const D3D12XBOX_PRESENT_PARAMETERS* params);
 SCARLETTX_D3D12_API int32_t D3D12XboxGetFrameStatisticsX(

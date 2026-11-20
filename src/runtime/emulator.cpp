@@ -71,7 +71,7 @@ Status Emulator::BootPackage(const std::string& package_dir) {
 
 #if defined(_WIN32)
     // Inject HLE shim directory at the front of PATH so guest imports of
-    // d3d12_xs.dll, xgameruntime.dll, and XboxBvhBuilder.dll resolve to ScarlettX shims.
+    // d3d12_xs.dll, xg_xs.dll, AcpHal.dll, xgameruntime.dll, etc. resolve to ScarlettX shims.
     std::string shim_dir = config_.shim_directory;
     if (shim_dir.empty()) {
         char exe_buf[MAX_PATH] = {};
@@ -97,6 +97,31 @@ Status Emulator::BootPackage(const std::string& package_dir) {
 
     set_env("SCARLETTX_HEADLESS", config_.headless ? "1" : "0");
     set_env("SCARLETTX_PREFER_WARP", config_.prefer_warp ? "1" : "0");
+    if (!report.config.title_id.empty()) {
+        set_env("SCARLETTX_TITLE_ID", report.config.title_id.c_str());
+    }
+    const std::string abs_pkg_dir = std::filesystem::absolute(package_dir).string();
+    set_env("SCARLETTX_PACKAGE_ROOT", abs_pkg_dir.c_str());
+
+    // Map virtual G: drive to package root if G: is not already assigned on the host.
+    // Real Xbox Series X|S titles (e.g. Unity Game Core nativePlugins.txt) reference G:/.
+    struct VirtualDriveGuard {
+        bool mapped = false;
+        std::string target;
+        ~VirtualDriveGuard() {
+            if (mapped) {
+                DefineDosDeviceA(DDD_REMOVE_DEFINITION, "G:", target.c_str());
+            }
+        }
+    } g_drive_guard;
+    if ((GetLogicalDrives() & (1u << ('G' - 'A'))) == 0) {
+        if (DefineDosDeviceA(0, "G:", abs_pkg_dir.c_str())) {
+            g_drive_guard.mapped = true;
+            g_drive_guard.target = abs_pkg_dir;
+            std::cout << "[ScarlettX][vfs] Mapped virtual G:\\ -> " << abs_pkg_dir << "\n";
+        }
+    }
+
     if (config_.max_frames > 0) {
         set_env("SCARLETTX_MAX_FRAMES", std::to_string(config_.max_frames).c_str());
     }
@@ -124,10 +149,31 @@ Status Emulator::BootPackage(const std::string& package_dir) {
                   << " (relocated=" << (image.WasRelocated() ? "yes" : "no")
                   << ", relocs=" << image.RelocationsApplied()
                   << ", imports=" << image.Resolutions().size()
-                  << ", stubs=" << image.Stubs().StubCount() << ")\n";
+                  << ", stubs=" << image.Stubs().StubCount() << ")" << std::endl;
+        if (image.Stubs().StubCount() > 0) {
+            for (const auto& res : image.Resolutions()) {
+                if (res.kind == ImportResolutionKind::StubThunk) {
+                    std::cout << "  [stub #" << res.stub_id << "] " << res.dll_name << "!";
+                    if (res.by_ordinal) {
+                        std::cout << "#" << res.ordinal;
+                    } else {
+                        std::cout << res.symbol_name;
+                    }
+                    std::cout << " (target=" << res.target_dll << ")" << std::endl;
+                }
+            }
+        }
 
         int exit_code = 0;
-        Status call_st = image.CallExportedEntry(config_.in_process_entry, exit_code);
+        Status call_st = Status::Ok();
+        if (image.GetExportAddress(config_.in_process_entry) != nullptr) {
+            call_st = image.CallExportedEntry(config_.in_process_entry, exit_code);
+        } else {
+            set_env("SCARLETTX_REAL_TITLE", "1");
+            std::cout << "[ScarlettX][loader] Entering native PE entry point at "
+                      << image.EntryPointAddress() << std::endl;
+            call_st = image.CallEntryPoint(exit_code);
+        }
         if (!call_st.ok()) {
             return call_st;
         }
@@ -158,8 +204,11 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     CloseHandle(pi.hProcess);
 
     if (exit_code != 0) {
+        char hex_buf[32] = {};
+        std::snprintf(hex_buf, sizeof(hex_buf), "0x%08lX", static_cast<unsigned long>(exit_code));
         return Status::Error(StatusCode::DeviceError,
-                             "Guest process exited with non-zero code: " + std::to_string(exit_code));
+                             "Guest process exited with non-zero code: " +
+                                 std::to_string(exit_code) + " (" + hex_buf + ")");
     }
     return Status::Ok();
 #else

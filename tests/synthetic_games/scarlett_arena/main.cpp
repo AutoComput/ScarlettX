@@ -111,7 +111,7 @@ extern "C" ARENA_EXPORT int ScarlettGuestMain() {
     }
 
     // -----------------------------------------------------------------------
-    // 2. DirectStorage + XVD Asset Streaming (dstorage.dll)
+    // 2. DirectStorage + XVD Asset Streaming (dstorage_xs.dll)
     // -----------------------------------------------------------------------
     const char* xvd_env = std::getenv("SCARLETTX_ARENA_XVD");
     const std::string xvd_path = (xvd_env && *xvd_env) ? xvd_env : "arena_assets.xvd";
@@ -219,8 +219,8 @@ extern "C" ARENA_EXPORT int ScarlettGuestMain() {
     dev_params.Version = 1;
     dev_params.PreferWarp = 1;
     uint64_t d3d_dev = 0;
-    if (D3D12XboxCreateDevice(&dev_params, &d3d_dev) != 0) {
-        std::fprintf(stderr, "[scarlett_arena] D3D12XboxCreateDevice failed\n");
+    if (D3D12XboxCreateSyntheticDevice(&dev_params, &d3d_dev) != 0) {
+        std::fprintf(stderr, "[scarlett_arena] D3D12XboxCreateSyntheticDevice failed\n");
         return 20;
     }
     D3D12XboxSetFrameIntervalX(d3d_dev, 16667, 1);

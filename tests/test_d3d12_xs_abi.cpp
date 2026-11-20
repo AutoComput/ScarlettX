@@ -47,15 +47,17 @@ SCARLETT_BVH_TRIANGLE MakeTri(float z, float r, float g, float b) {
 }  // namespace
 
 int main() {
-    // 1. Direct PC D3D12 creation via D3D12CreateDeviceX + root signature serialization
+    // 1. Direct PC D3D12 creation via D3D12XboxCreateDevice + root signature serialization
 #if defined(_WIN32)
     {
+        D3D12XboxSetProcessDebugFlags(D3D12XBOX_PROCESS_DEBUG_FLAG_NONE);
+        SX_CHECK_EQ(D3D12XboxGetProcessDebugFlags(), 0u);
         D3D12XBOX_CREATE_DEVICE_PARAMETERS params{};
         params.Version = 1;
         params.PreferWarp = 1;
         ID3D12Device* raw_dev = nullptr;
-        const int32_t hr = D3D12CreateDeviceX(&params, &__uuidof(ID3D12Device),
-                                              reinterpret_cast<void**>(&raw_dev));
+        const int32_t hr = D3D12XboxCreateDevice(nullptr, &params, &__uuidof(ID3D12Device),
+                                                 reinterpret_cast<void**>(&raw_dev));
         SX_CHECK(hr >= 0);
         SX_CHECK(raw_dev != nullptr);
 
@@ -99,7 +101,7 @@ int main() {
     D3D12XBOX_CREATE_DEVICE_PARAMETERS params{};
     params.Version = 1;
     params.PreferWarp = 1;
-    SX_CHECK_EQ(D3D12XboxCreateDevice(&params, &dev), 0);
+    SX_CHECK_EQ(D3D12XboxCreateSyntheticDevice(&params, &dev), 0);
     SX_CHECK(dev != 0);
 
     // Null & invalid handle checks
@@ -121,7 +123,7 @@ int main() {
     SX_CHECK(alloc_size >= 1920ull * 1080ull * 4ull);
     SX_CHECK(alloc_align >= 65536ull);
 
-    // Frame interval, schedule frame event, WaitFrameEventXEx, PresentXEx, stats, Suspend/Resume
+    // Frame interval, schedule frame event, WaitFrameEventXEx, PresentX, stats, Suspend/Resume
     SX_CHECK_EQ(D3D12XboxSetFrameIntervalX(dev, D3D12XBOX_FRAME_INTERVAL_120_HZ, 0), 0);
 
 #if defined(_WIN32)
@@ -159,7 +161,7 @@ int main() {
 #if defined(_WIN32)
     present_params.CommandQueue = queue;
 #endif
-    SX_CHECK_EQ(D3D12XboxPresentXEx(dev, &present_params), 0);
+    SX_CHECK_EQ(D3D12XboxPresentXParams(dev, &present_params), 0);
 
     D3D12XBOX_FRAME_STATISTICS stats{};
     SX_CHECK_EQ(D3D12XboxGetFrameStatisticsX(dev, &stats), 0);
@@ -169,11 +171,11 @@ int main() {
     SX_CHECK_EQ(stats.IntervalHz, 120u);
     SX_CHECK_EQ(stats.Suspended, 0u);
 
-    // Suspend rejects PresentXEx until resumed
+    // Suspend rejects PresentX until resumed
     SX_CHECK_EQ(D3D12XboxSuspendX(dev, 0), 0);
-    SX_CHECK(D3D12XboxPresentXEx(dev, &present_params) != 0);
+    SX_CHECK(D3D12XboxPresentXParams(dev, &present_params) != 0);
     SX_CHECK_EQ(D3D12XboxResumeX(dev), 0);
-    SX_CHECK_EQ(D3D12XboxPresentXEx(dev, &present_params), 0);
+    SX_CHECK_EQ(D3D12XboxPresentXParams(dev, &present_params), 0);
 
 #if defined(_WIN32)
     queue->Release();

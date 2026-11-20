@@ -58,10 +58,20 @@ endif()
 # ---------------------------------------------------------------------------
 # Scarlett HLE System DLL Shims
 # ---------------------------------------------------------------------------
-add_library(d3d12_xs SHARED src/shims/d3d12_xs_shim.cpp)
+add_library(d3d12_xs SHARED src/shims/d3d12_xs_shim.cpp src/shims/d3d12_xs_exports.cpp)
 set_target_properties(d3d12_xs PROPERTIES PREFIX "" OUTPUT_NAME "d3d12_xs")
 target_link_libraries(d3d12_xs PRIVATE scarlettx_core)
 target_compile_definitions(d3d12_xs PRIVATE SCARLETTX_BUILDING_D3D12_XS=1)
+
+add_library(xg_xs SHARED src/shims/xg_xs_shim.cpp)
+set_target_properties(xg_xs PROPERTIES PREFIX "" OUTPUT_NAME "xg_xs")
+target_link_libraries(xg_xs PRIVATE scarlettx_core)
+target_compile_definitions(xg_xs PRIVATE SCARLETTX_BUILDING_XG_XS=1)
+
+add_library(AcpHal SHARED src/shims/acphal_shim.cpp)
+set_target_properties(AcpHal PROPERTIES PREFIX "" OUTPUT_NAME "AcpHal")
+target_link_libraries(AcpHal PRIVATE scarlettx_core)
+target_compile_definitions(AcpHal PRIVATE SCARLETTX_BUILDING_ACPHAL=1)
 
 add_library(xgameruntime SHARED src/shims/xgameruntime_shim.cpp)
 set_target_properties(xgameruntime PROPERTIES PREFIX "" OUTPUT_NAME "xgameruntime")
@@ -78,7 +88,12 @@ set_target_properties(dstorage PROPERTIES PREFIX "" OUTPUT_NAME "dstorage")
 target_link_libraries(dstorage PRIVATE scarlettx_core)
 target_compile_definitions(dstorage PRIVATE SCARLETTX_BUILDING_DSTORAGE=1)
 
-add_library(xaudio2_9 SHARED src/shims/xaudio2_shim.cpp)
+add_library(dstorage_xs SHARED src/shims/dstorage_shim.cpp)
+set_target_properties(dstorage_xs PROPERTIES PREFIX "" OUTPUT_NAME "dstorage_xs")
+target_link_libraries(dstorage_xs PRIVATE scarlettx_core)
+target_compile_definitions(dstorage_xs PRIVATE SCARLETTX_BUILDING_DSTORAGE=1)
+
+add_library(xaudio2_9 SHARED src/shims/xaudio2_shim.cpp src/shims/xaudio2_9.def)
 set_target_properties(xaudio2_9 PROPERTIES PREFIX "" OUTPUT_NAME "xaudio2_9")
 target_link_libraries(xaudio2_9 PRIVATE scarlettx_core)
 target_compile_definitions(xaudio2_9 PRIVATE SCARLETTX_BUILDING_XAUDIO2=1)
@@ -120,9 +135,12 @@ add_executable(scarlettx src/main.cpp)
 target_link_libraries(scarlettx PRIVATE scarlettx_core)
 add_dependencies(scarlettx
     d3d12_xs
+    xg_xs
+    AcpHal
     xgameruntime
     XboxBvhBuilder
     dstorage
+    dstorage_xs
     xaudio2_9
     GameInput
     Bink2Scarlett

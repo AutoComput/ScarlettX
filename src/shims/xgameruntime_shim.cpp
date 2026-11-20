@@ -1649,8 +1649,73 @@ XGameResult XGameGetXboxTitleId(uint32_t* titleId) {
     if (!titleId) {
         return XGR_E_POINTER;
     }
+    if (const char* env_tid = std::getenv("SCARLETTX_TITLE_ID"); env_tid && *env_tid) {
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(env_tid, &end, 16);
+        if (end && end != env_tid) {
+            *titleId = static_cast<uint32_t>(parsed);
+            return XGR_S_OK;
+        }
+    }
     *titleId = 0x5CA00001u;
     return XGR_S_OK;
+}
+
+void XErrorReport(XGameResult hr, const char* msg) {
+    std::fprintf(stderr, "[ScarlettX][xgameruntime] XErrorReport(hr=0x%08X, msg=%s)\n",
+                 static_cast<unsigned>(hr), msg ? msg : "<null>");
+    std::fflush(stderr);
+}
+
+XGameResult InitializeApiImpl(uint32_t build, uint32_t revision) {
+    std::fprintf(stderr, "[ScarlettX][xgameruntime] InitializeApiImpl(build=%u, rev=%u)\n",
+                 build, revision);
+    std::fflush(stderr);
+    return XGameRuntimeInitialize();
+}
+
+XGameResult InitializeApiImplEx(uint32_t build, uint32_t revision, uint64_t flags) {
+    std::fprintf(stderr, "[ScarlettX][xgameruntime] InitializeApiImplEx(build=%u, rev=%u, flags=0x%llX)\n",
+                 build, revision, static_cast<unsigned long long>(flags));
+    std::fflush(stderr);
+    return XGameRuntimeInitialize();
+}
+
+void UninitializeApiImpl() {
+    std::fprintf(stderr, "[ScarlettX][xgameruntime] UninitializeApiImpl()\n");
+    std::fflush(stderr);
+    XGameRuntimeUninitialize();
+}
+
+static void FormatGuid(const void* guid_ptr, char* out, size_t out_size) {
+    if (!guid_ptr) {
+        std::snprintf(out, out_size, "<null>");
+        return;
+    }
+    const auto* b = reinterpret_cast<const uint8_t*>(guid_ptr);
+    const uint32_t d1 = static_cast<uint32_t>(b[0]) | (static_cast<uint32_t>(b[1]) << 8) |
+                        (static_cast<uint32_t>(b[2]) << 16) | (static_cast<uint32_t>(b[3]) << 24);
+    const uint16_t d2 = static_cast<uint16_t>(b[4]) | (static_cast<uint16_t>(b[5]) << 8);
+    const uint16_t d3 = static_cast<uint16_t>(b[6]) | (static_cast<uint16_t>(b[7]) << 8);
+    std::snprintf(out, out_size, "{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+                  d1, d2, d3, b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+}
+
+XGameResult QueryApiImpl(const void* api_id, const void* riid, void** out_impl) {
+    if (!api_id || !riid || !out_impl) {
+        return XGR_E_POINTER;
+    }
+    *out_impl = nullptr;
+    char api_str[64] = {};
+    char iid_str[64] = {};
+    FormatGuid(api_id, api_str, sizeof(api_str));
+    FormatGuid(riid, iid_str, sizeof(iid_str));
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> E_NOINTERFACE\n",
+                 api_str, iid_str);
+    std::fflush(stderr);
+    // E_NOINTERFACE until specific GDK ApiImpl interface GUIDs are observed at runtime.
+    return static_cast<XGameResult>(0x80004002u);
 }
 
 }  // extern "C"

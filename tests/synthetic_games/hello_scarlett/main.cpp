@@ -30,8 +30,8 @@ int main() {
     params.Version = 1;
     params.PreferWarp = 1;
     uint64_t d3d_dev = 0;
-    if (D3D12XboxCreateDevice(&params, &d3d_dev) != 0) {
-        std::cerr << "[hello_scarlett] D3D12XboxCreateDevice failed\n";
+    if (D3D12XboxCreateSyntheticDevice(&params, &d3d_dev) != 0) {
+        std::cerr << "[hello_scarlett] D3D12XboxCreateSyntheticDevice failed\n";
         return 4;
     }
 

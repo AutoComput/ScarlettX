@@ -84,6 +84,85 @@ void RunAndClearGuestAtExitInRange(const uint8_t* base, size_t size) {
     }
 }
 
+std::string& GuestShimDirectory() {
+    static std::string dir;
+    return dir;
+}
+
+bool IsHleShimFilename(const std::string& lower_name) {
+    static const char* const kShims[] = {
+        "xgameruntime.dll",
+        "d3d12_xs.dll",
+        "xg_xs.dll",
+        "acphal.dll",
+        "gameinput.dll",
+        "xaudio2_9.dll",
+        "dstorage_xs.dll",
+        "bink2scarlett.dll",
+        "amd_fidelityfx_loader_xbox.dll",
+        "amd_fidelityfx_upscaler_xbox.dll",
+        "libhttpclient.gdk.dll",
+        "xcurl.dll",
+    };
+    for (const char* s : kShims) {
+        if (lower_name == s) return true;
+    }
+    return false;
+}
+
+std::string ExtractBasenameLower(const std::string& path_str) {
+    const size_t pos = path_str.find_last_of("\\/");
+    const std::string base = (pos == std::string::npos) ? path_str : path_str.substr(pos + 1);
+    return ToLowerAscii(base);
+}
+
+HMODULE TryLoadGuestShimA(const char* name) {
+    if (!name || !*name) return nullptr;
+    const std::string& shim_dir = GuestShimDirectory();
+    if (shim_dir.empty()) return nullptr;
+    const std::string base = ExtractBasenameLower(name);
+    if (!IsHleShimFilename(base)) return nullptr;
+    const auto candidate = std::filesystem::path(shim_dir) / base;
+    if (std::filesystem::exists(candidate)) {
+        HMODULE mod = LoadLibraryA(candidate.string().c_str());
+        std::fprintf(stderr, "[ScarlettX][loader] Redirected dynamic load '%s' -> '%s' (handle=%p)\n",
+                     name, candidate.string().c_str(), static_cast<void*>(mod));
+        return mod;
+    }
+    return nullptr;
+}
+
+HMODULE WINAPI GuestLoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
+    if (HMODULE mod = TryLoadGuestShimA(lpLibFileName)) {
+        return mod;
+    }
+    return LoadLibraryExA(lpLibFileName, hFile, dwFlags);
+}
+
+HMODULE WINAPI GuestLoadLibraryA(LPCSTR lpLibFileName) {
+    if (HMODULE mod = TryLoadGuestShimA(lpLibFileName)) {
+        return mod;
+    }
+    return LoadLibraryA(lpLibFileName);
+}
+
+HMODULE WINAPI GuestLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
+    if (lpLibFileName && *lpLibFileName) {
+        std::string narrow;
+        for (const wchar_t* p = lpLibFileName; *p; ++p) {
+            narrow.push_back(*p < 128 ? static_cast<char>(*p) : '?');
+        }
+        if (HMODULE mod = TryLoadGuestShimA(narrow.c_str())) {
+            return mod;
+        }
+    }
+    return LoadLibraryExW(lpLibFileName, hFile, dwFlags);
+}
+
+HMODULE WINAPI GuestLoadLibraryW(LPCWSTR lpLibFileName) {
+    return GuestLoadLibraryExW(lpLibFileName, nullptr, 0);
+}
+
 DWORD SectionCharsToPageProtect(uint32_t ch) {
     const bool exec = (ch & IMAGE_SCN_MEM_EXECUTE) != 0;
     const bool read = (ch & IMAGE_SCN_MEM_READ) != 0;
@@ -117,6 +196,18 @@ std::string ResolveApiSetDll(const std::string& dll_name) {
     }
     if (StartsWith(lower, "api-ms-win-core-registry-")) {
         return "advapi32.dll";
+    }
+    if (StartsWith(lower, "api-ms-win-core-psm-appnotify-")) {
+        return "twinapi.appcore.dll";
+    }
+    if (StartsWith(lower, "ext-ms-win-rtcore-ntuser-")) {
+        return "user32.dll";
+    }
+    if (StartsWith(lower, "api-ms-win-core-rtlsupport-")) {
+        return "ntdll.dll";
+    }
+    if (StartsWith(lower, "api-ms-win-core-synch-l1-2-")) {
+        return "kernelbase.dll";
     }
     if (StartsWith(lower, "api-ms-win-core-") || StartsWith(lower, "ext-ms-win-core-")) {
         return "kernel32.dll";
@@ -327,6 +418,9 @@ Status MappedPeImage::MapFile(const std::string& pe_path,
 
     // 4. Resolve Import Address Table (IAT):
     //    Order: HleSymbolRegistry -> redirected/API-set host DLL -> x86-64 StubThunkTable.
+    if (!options.shim_directory.empty()) {
+        GuestShimDirectory() = options.shim_directory;
+    }
     stubs_.SetVerboseLogging(options.verbose_stub_logging);
     std::unordered_map<std::string, HMODULE> module_cache;
 
@@ -403,8 +497,9 @@ Status MappedPeImage::MapFile(const std::string& pe_path,
                         res.kind = ImportResolutionKind::HleRegistry;
                     }
 
-                    // (a.5) Isolate guest CRT atexit registrations so unmapping the image
-                    // never leaves dangling function pointers in the host ucrtbase table.
+                    // (a.5) Isolate guest CRT atexit registrations and intercept dynamic
+                    // LoadLibrary* calls so LOAD_LIBRARY_SEARCH_SYSTEM32 for xgameruntime.dll
+                    // resolves to ScarlettX's shim directory.
                     if (!resolved && !by_ordinal) {
                         const std::string target_lower = ToLowerAscii(target_dll);
                         if ((target_lower == "ucrtbase.dll" || target_lower == "msvcrt.dll") &&
@@ -412,6 +507,22 @@ Status MappedPeImage::MapFile(const std::string& pe_path,
                              sym_name == "_crt_at_quick_exit")) {
                             resolved = reinterpret_cast<void*>(&GuestIsolatedAtExit);
                             res.kind = ImportResolutionKind::HleRegistry;
+                        } else if (!options.shim_directory.empty() &&
+                                   (target_lower == "kernel32.dll" ||
+                                    target_lower == "kernelbase.dll")) {
+                            if (sym_name == "LoadLibraryExA") {
+                                resolved = reinterpret_cast<void*>(&GuestLoadLibraryExA);
+                                res.kind = ImportResolutionKind::HleRegistry;
+                            } else if (sym_name == "LoadLibraryA") {
+                                resolved = reinterpret_cast<void*>(&GuestLoadLibraryA);
+                                res.kind = ImportResolutionKind::HleRegistry;
+                            } else if (sym_name == "LoadLibraryExW") {
+                                resolved = reinterpret_cast<void*>(&GuestLoadLibraryExW);
+                                res.kind = ImportResolutionKind::HleRegistry;
+                            } else if (sym_name == "LoadLibraryW") {
+                                resolved = reinterpret_cast<void*>(&GuestLoadLibraryW);
+                                res.kind = ImportResolutionKind::HleRegistry;
+                            }
                         }
                     }
 
@@ -568,6 +679,18 @@ Status MappedPeImage::CallExportedEntry(const std::string& export_name, int& out
     }
     using GuestEntryFn = int (*)();
     auto fn = reinterpret_cast<GuestEntryFn>(addr);
+    out_exit_code = fn();
+    return Status::Ok();
+}
+
+Status MappedPeImage::CallEntryPoint(int& out_exit_code) const {
+    out_exit_code = -1;
+    void* addr = EntryPointAddress();
+    if (!addr) {
+        return Status::Error(StatusCode::NotFound, "PE image has no entry point");
+    }
+    using NativeEntryFn = int (*)();
+    auto fn = reinterpret_cast<NativeEntryFn>(addr);
     out_exit_code = fn();
     return Status::Ok();
 }

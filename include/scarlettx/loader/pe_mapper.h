@@ -84,6 +84,9 @@ public:
     // Invokes an exported `int __cdecl Fn(void)` guest entry point in-process.
     Status CallExportedEntry(const std::string& export_name, int& out_exit_code) const;
 
+    // Invokes the PE image's native AddressOfEntryPoint in-process.
+    Status CallEntryPoint(int& out_exit_code) const;
+
     const std::vector<PeImportResolution>& Resolutions() const noexcept { return resolutions_; }
     const StubThunkTable& Stubs() const noexcept { return stubs_; }
 

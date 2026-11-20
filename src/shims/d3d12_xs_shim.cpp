@@ -2,11 +2,16 @@
 #include "scarlettx/gpu/d3d12_xs_abi.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "scarlettx/gpu/d3d12_backend.h"
@@ -20,6 +25,69 @@
 #endif
 
 namespace {
+
+#if defined(_WIN32)
+HMODULE GetSystemD3D12Module() {
+    static HMODULE mod = []() -> HMODULE {
+        wchar_t sys_dir[MAX_PATH] = {};
+        if (GetSystemDirectoryW(sys_dir, MAX_PATH) == 0) return nullptr;
+        std::wstring path = std::wstring(sys_dir) + L"\\d3d12.dll";
+        return LoadLibraryW(path.c_str());
+    }();
+    return mod;
+}
+
+HRESULT CallSystemD3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL fl, REFIID riid, void** ppv) {
+    HMODULE m = GetSystemD3D12Module();
+    if (!m) return E_FAIL;
+    using Fn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+    auto fn = reinterpret_cast<Fn>(GetProcAddress(m, "D3D12CreateDevice"));
+    return fn ? fn(adapter, fl, riid, ppv) : E_FAIL;
+}
+
+HRESULT CallSystemD3D12GetDebugInterface(REFIID riid, void** ppv) {
+    HMODULE m = GetSystemD3D12Module();
+    if (!m) return E_FAIL;
+    using Fn = HRESULT(WINAPI*)(REFIID, void**);
+    auto fn = reinterpret_cast<Fn>(GetProcAddress(m, "D3D12GetDebugInterface"));
+    return fn ? fn(riid, ppv) : E_FAIL;
+}
+
+HRESULT CallSystemD3D12SerializeRootSignature(
+    const D3D12_ROOT_SIGNATURE_DESC* desc,
+    D3D_ROOT_SIGNATURE_VERSION ver,
+    ID3DBlob** blob,
+    ID3DBlob** err) {
+    HMODULE m = GetSystemD3D12Module();
+    if (!m) return E_FAIL;
+    using Fn = HRESULT(WINAPI*)(const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob**);
+    auto fn = reinterpret_cast<Fn>(GetProcAddress(m, "D3D12SerializeRootSignature"));
+    return fn ? fn(desc, ver, blob, err) : E_FAIL;
+}
+
+HRESULT CallSystemD3D12SerializeVersionedRootSignature(
+    const D3D12_VERSIONED_ROOT_SIGNATURE_DESC* desc,
+    ID3DBlob** blob,
+    ID3DBlob** err) {
+    HMODULE m = GetSystemD3D12Module();
+    if (!m) return E_FAIL;
+    using Fn = HRESULT(WINAPI*)(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*, ID3DBlob**, ID3DBlob**);
+    auto fn = reinterpret_cast<Fn>(GetProcAddress(m, "D3D12SerializeVersionedRootSignature"));
+    return fn ? fn(desc, blob, err) : E_FAIL;
+}
+
+HRESULT CallSystemD3D12CreateRootSignatureDeserializer(
+    LPCVOID src,
+    SIZE_T size,
+    REFIID riid,
+    void** ppv) {
+    HMODULE m = GetSystemD3D12Module();
+    if (!m) return E_FAIL;
+    using Fn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, REFIID, void**);
+    auto fn = reinterpret_cast<Fn>(GetProcAddress(m, "D3D12CreateRootSignatureDeserializer"));
+    return fn ? fn(src, size, riid, ppv) : E_FAIL;
+}
+#endif
 
 uint32_t IntervalToHz(uint32_t interval) {
     switch (interval) {
@@ -120,16 +188,108 @@ struct D3D12XsDeviceState {
 std::mutex g_mutex;
 uint64_t g_next_handle = 0x12000001ull;
 std::unordered_map<uint64_t, std::unique_ptr<D3D12XsDeviceState>> g_devices;
+std::atomic<uint32_t> g_process_debug_flags{0};
+
+bool TraceEnabled() {
+    const char* v = std::getenv("SCARLETTX_TRACE");
+    return v && v[0] != '\0' && v[0] != '0';
+}
+
+bool RealTitleMode() {
+    const char* v = std::getenv("SCARLETTX_REAL_TITLE");
+    return v && v[0] != '\0' && v[0] != '0';
+}
+
+// ---------------------------------------------------------------------------
+// Xbox ID3D12Device COM vtable proxy for real Scarlett binaries.
+// Prevents crashing on misaligned PC ID3D12Device vtables and logs every
+// guest vtable slot call during bring-up.
+// ---------------------------------------------------------------------------
+using ComVtableFn = intptr_t (SCARLETTX_GDK_CALLBACK*)(void*, uintptr_t, uintptr_t, uintptr_t);
+
+struct XboxD3D12DeviceProxy {
+    const ComVtableFn* lpVtbl;
+    std::atomic<uint32_t> ref_count{1};
+#if defined(_WIN32)
+    ID3D12Device* pc_device = nullptr;
+#endif
+};
+
+intptr_t SCARLETTX_GDK_CALLBACK ProxyQueryInterface(void* self, uintptr_t riid, uintptr_t ppv, uintptr_t) {
+    auto* obj = static_cast<XboxD3D12DeviceProxy*>(self);
+    auto** out = reinterpret_cast<void**>(ppv);
+    if (!out) return static_cast<intptr_t>(0x80004003u);  // E_POINTER
+    if (TraceEnabled() && riid) {
+        const auto* g = reinterpret_cast<const uint32_t*>(riid);
+        std::cerr << "[ScarlettX][d3d12_xs] XboxID3D12Device::QueryInterface("
+                  << std::hex << g[0] << "-" << g[1] << "-" << g[2] << "-" << g[3] << std::dec << ")\n";
+    }
+    obj->ref_count.fetch_add(1, std::memory_order_relaxed);
+    *out = self;
+    return 0;  // S_OK
+}
+
+intptr_t SCARLETTX_GDK_CALLBACK ProxyAddRef(void* self, uintptr_t, uintptr_t, uintptr_t) {
+    return static_cast<intptr_t>(
+        static_cast<XboxD3D12DeviceProxy*>(self)->ref_count.fetch_add(1, std::memory_order_relaxed) + 1);
+}
+
+intptr_t SCARLETTX_GDK_CALLBACK ProxyRelease(void* self, uintptr_t, uintptr_t, uintptr_t) {
+    auto* obj = static_cast<XboxD3D12DeviceProxy*>(self);
+    const uint32_t rem = obj->ref_count.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (rem == 0) {
+#if defined(_WIN32)
+        if (obj->pc_device) obj->pc_device->Release();
+#endif
+        delete obj;
+    }
+    return static_cast<intptr_t>(rem);
+}
+
+template <int Slot>
+intptr_t SCARLETTX_GDK_CALLBACK ProxyTracedSlot(void* /*self*/, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
+    if (TraceEnabled()) {
+        std::cerr << "[ScarlettX][d3d12_xs] XboxID3D12Device::vtable[" << Slot
+                  << "](a1=0x" << std::hex << a1 << ", a2=0x" << a2 << ", a3=0x" << a3
+                  << std::dec << ") -> E_NOTIMPL\n";
+    }
+    return static_cast<intptr_t>(static_cast<int32_t>(0x80004001u));  // E_NOTIMPL
+}
+
+template <size_t... Is>
+constexpr std::array<ComVtableFn, sizeof...(Is) + 3> MakeProxyVtable(std::index_sequence<Is...>) {
+    return {
+        &ProxyQueryInterface,
+        &ProxyAddRef,
+        &ProxyRelease,
+        &ProxyTracedSlot<static_cast<int>(Is + 3)>...,
+    };
+}
+
+const auto kXboxDeviceProxyVtbl = MakeProxyVtable(std::make_index_sequence<125>{});
 
 }  // namespace
 
 extern "C" {
 
 // ---------------------------------------------------------------------------
-// Standard PC D3D12 forwarding entry points
+// Verified Xbox Series X|S d3d12_xs.dll entry points
 // ---------------------------------------------------------------------------
-int32_t SCARLETTX_GDK_CALLBACK D3D12CreateDeviceX(
-    const D3D12XBOX_CREATE_DEVICE_PARAMETERS* params,
+void SCARLETTX_GDK_CALLBACK D3D12XboxSetProcessDebugFlags(uint32_t flags) {
+    g_process_debug_flags.store(flags, std::memory_order_relaxed);
+    if (TraceEnabled()) {
+        std::cerr << "[ScarlettX][d3d12_xs] D3D12XboxSetProcessDebugFlags(0x"
+                  << std::hex << flags << std::dec << ")\n";
+    }
+}
+
+uint32_t SCARLETTX_GDK_CALLBACK D3D12XboxGetProcessDebugFlags(void) {
+    return g_process_debug_flags.load(std::memory_order_relaxed);
+}
+
+int32_t SCARLETTX_GDK_CALLBACK D3D12XboxCreateDevice(
+    void* pAdapter,
+    const D3D12XBOX_CREATE_DEVICE_PARAMETERS* pParameters,
     const void* riid,
     void** ppvDevice) {
 #if defined(_WIN32)
@@ -138,13 +298,23 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12CreateDeviceX(
     }
     *ppvDevice = nullptr;
 
-    const bool prefer_warp = params ? (params->PreferWarp != 0) : true;
-    const bool debug_layer =
-        params ? ((params->ProcessDebugFlags & D3D12XBOX_PROCESS_DEBUG_FLAG_DEBUG) != 0) : false;
+    if (TraceEnabled()) {
+        const auto* g = reinterpret_cast<const uint32_t*>(riid);
+        std::cerr << "[ScarlettX][d3d12_xs] D3D12XboxCreateDevice(adapter=" << pAdapter
+                  << ", params=" << pParameters
+                  << ", riid=" << std::hex << g[0] << "-" << g[1] << "-" << g[2] << "-" << g[3]
+                  << std::dec << ")\n";
+    }
 
-    if (debug_layer) {
+    const bool prefer_warp = pParameters ? (pParameters->PreferWarp != 0) : true;
+    const uint32_t dbg_flags =
+        (pParameters ? pParameters->ProcessDebugFlags : 0u) |
+        g_process_debug_flags.load(std::memory_order_relaxed);
+    const bool debug_layer = (dbg_flags & D3D12XBOX_PROCESS_DEBUG_FLAG_DEBUG) != 0;
+
+    if (debug_layer && !RealTitleMode()) {
         ID3D12Debug* dbg = nullptr;
-        if (SUCCEEDED(D3D12GetDebugInterface(__uuidof(ID3D12Debug), reinterpret_cast<void**>(&dbg))) && dbg) {
+        if (SUCCEEDED(CallSystemD3D12GetDebugInterface(__uuidof(ID3D12Debug), reinterpret_cast<void**>(&dbg))) && dbg) {
             dbg->EnableDebugLayer();
             dbg->Release();
         }
@@ -157,7 +327,10 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12CreateDeviceX(
     }
 
     IDXGIAdapter1* adapter = nullptr;
-    if (prefer_warp) {
+    if (pAdapter) {
+        adapter = static_cast<IDXGIAdapter1*>(pAdapter);
+        adapter->AddRef();
+    } else if (prefer_warp) {
         hr = factory->EnumWarpAdapter(__uuidof(IDXGIAdapter1), reinterpret_cast<void**>(&adapter));
     } else {
         hr = factory->EnumAdapters1(0, &adapter);
@@ -166,17 +339,39 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12CreateDeviceX(
         }
     }
 
+    if (RealTitleMode()) {
+        // Real Scarlett guest binary: NEVER hand back a raw PC ID3D12Device* vtable.
+        ID3D12Device* pc_dev = nullptr;
+        hr = CallSystemD3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, __uuidof(ID3D12Device),
+                                         reinterpret_cast<void**>(&pc_dev));
+        if (FAILED(hr)) {
+            hr = CallSystemD3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
+                                             reinterpret_cast<void**>(&pc_dev));
+        }
+        if (adapter) adapter->Release();
+        factory->Release();
+        if (FAILED(hr) || !pc_dev) {
+            return static_cast<int32_t>(hr);
+        }
+        auto* proxy = new XboxD3D12DeviceProxy();
+        proxy->lpVtbl = kXboxDeviceProxyVtbl.data();
+        proxy->pc_device = pc_dev;
+        *ppvDevice = proxy;
+        return S_OK;
+    }
+
     const IID target_iid = *reinterpret_cast<const IID*>(riid);
-    hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, target_iid, ppvDevice);
+    hr = CallSystemD3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, target_iid, ppvDevice);
     if (FAILED(hr)) {
-        hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, target_iid, ppvDevice);
+        hr = CallSystemD3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, target_iid, ppvDevice);
     }
 
     if (adapter) adapter->Release();
     factory->Release();
     return static_cast<int32_t>(hr);
 #else
-    (void)params;
+    (void)pAdapter;
+    (void)pParameters;
     (void)riid;
     (void)ppvDevice;
     return XGR_E_FAIL;
@@ -193,7 +388,7 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateDevice(
         return static_cast<int32_t>(E_INVALIDARG);
     }
     const IID target_iid = *reinterpret_cast<const IID*>(riid);
-    return static_cast<int32_t>(D3D12CreateDevice(
+    return static_cast<int32_t>(CallSystemD3D12CreateDevice(
         static_cast<IUnknown*>(pAdapter),
         static_cast<D3D_FEATURE_LEVEL>(minimumFeatureLevel),
         target_iid,
@@ -210,7 +405,7 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12XsGetDebugInterface(const void* riid, void**
         return static_cast<int32_t>(E_INVALIDARG);
     }
     const IID target_iid = *reinterpret_cast<const IID*>(riid);
-    return static_cast<int32_t>(D3D12GetDebugInterface(target_iid, ppvDebug));
+    return static_cast<int32_t>(CallSystemD3D12GetDebugInterface(target_iid, ppvDebug));
 #else
     (void)riid; (void)ppvDebug;
     return XGR_E_FAIL;
@@ -226,7 +421,7 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12XsSerializeRootSignature(
     if (!pRootSignature || !ppBlob) {
         return static_cast<int32_t>(E_INVALIDARG);
     }
-    return static_cast<int32_t>(D3D12SerializeRootSignature(
+    return static_cast<int32_t>(CallSystemD3D12SerializeRootSignature(
         static_cast<const D3D12_ROOT_SIGNATURE_DESC*>(pRootSignature),
         static_cast<D3D_ROOT_SIGNATURE_VERSION>(version),
         reinterpret_cast<ID3DBlob**>(ppBlob),
@@ -245,7 +440,7 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12XsSerializeVersionedRootSignature(
     if (!pRootSignature || !ppBlob) {
         return static_cast<int32_t>(E_INVALIDARG);
     }
-    return static_cast<int32_t>(D3D12SerializeVersionedRootSignature(
+    return static_cast<int32_t>(CallSystemD3D12SerializeVersionedRootSignature(
         static_cast<const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*>(pRootSignature),
         reinterpret_cast<ID3DBlob**>(ppBlob),
         reinterpret_cast<ID3DBlob**>(ppErrorBlob)));
@@ -265,7 +460,7 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12XsCreateRootSignatureDeserializer(
         return static_cast<int32_t>(E_INVALIDARG);
     }
     const IID target_iid = *reinterpret_cast<const IID*>(pRootSignatureDeserializerInterface);
-    return static_cast<int32_t>(D3D12CreateRootSignatureDeserializer(
+    return static_cast<int32_t>(CallSystemD3D12CreateRootSignatureDeserializer(
         pSrcData,
         srcDataSizeInBytes,
         target_iid,
@@ -300,10 +495,10 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12XsEnableExperimentalFeatures(
 }
 
 // ---------------------------------------------------------------------------
-// Scarlett handle-based device, frame pipeline & DXR translation exports
+// ScarlettX synthetic handle-based device, frame pipeline & DXR test helpers
 // ---------------------------------------------------------------------------
-int32_t D3D12XboxCreateDevice(const D3D12XBOX_CREATE_DEVICE_PARAMETERS* params,
-                              uint64_t* out_device_handle) {
+int32_t D3D12XboxCreateSyntheticDevice(const D3D12XBOX_CREATE_DEVICE_PARAMETERS* params,
+                                       uint64_t* out_device_handle) {
     if (!out_device_handle) {
         return -1;
     }
@@ -486,10 +681,10 @@ int32_t D3D12XboxPresentX(uint64_t device_handle, const D3D12XBOX_PRESENT_PLANE_
     params.Flags = D3D12XBOX_PRESENT_FLAG_NONE;
     params.Planes = plane;
     params.CommandQueue = nullptr;
-    return D3D12XboxPresentXEx(device_handle, &params);
+    return D3D12XboxPresentXParams(device_handle, &params);
 }
 
-int32_t D3D12XboxPresentXEx(uint64_t device_handle, const D3D12XBOX_PRESENT_PARAMETERS* params) {
+int32_t D3D12XboxPresentXParams(uint64_t device_handle, const D3D12XBOX_PRESENT_PARAMETERS* params) {
     if (!params) {
         return -1;
     }
@@ -856,7 +1051,7 @@ int32_t D3D12XboxCreateRootSignature(
 
     ID3DBlob* sig_blob = nullptr;
     ID3DBlob* err_blob = nullptr;
-    HRESULT hr = D3D12SerializeRootSignature(
+    HRESULT hr = CallSystemD3D12SerializeRootSignature(
         &rs_desc, D3D_ROOT_SIGNATURE_VERSION_1, &sig_blob, &err_blob);
     if (err_blob) err_blob->Release();
     if (FAILED(hr) || !sig_blob) {

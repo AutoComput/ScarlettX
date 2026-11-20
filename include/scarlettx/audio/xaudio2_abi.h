@@ -64,6 +64,12 @@ struct XMA2_PACKET_HEADER {
     int16_t StepSize;
 };
 
+// Verified retail XAudio2_9.dll ordinal #1 export (COM IXAudio2 creation).
+SCARLETTX_XAUDIO2_API int32_t XAudio2Create(
+    void** ppXAudio2,
+    uint32_t flags,
+    uint32_t xaudio2_processor);
+
 SCARLETTX_XAUDIO2_API int32_t XAudio2CreateEngine(uint32_t flags, uint64_t* out_engine);
 SCARLETTX_XAUDIO2_API int32_t XAudio2DestroyEngine(uint64_t engine);
 SCARLETTX_XAUDIO2_API int32_t XAudio2StartEngine(uint64_t engine);

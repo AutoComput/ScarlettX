@@ -433,4 +433,13 @@ SCARLETTX_XGR_API XGameResult XThreadSetTimeSensitive(bool isTimeSensitive);
 SCARLETTX_XGR_API void XThreadAssertNotTimeSensitive();
 SCARLETTX_XGR_API XGameResult XGameGetXboxTitleId(uint32_t* titleId);
 
+// ---------------------------------------------------------------------------
+// Verified EmbeddedXvd xgameruntime.dll exports (XError + ApiImpl)
+// ---------------------------------------------------------------------------
+SCARLETTX_XGR_API void XErrorReport(XGameResult hr, const char* msg);
+SCARLETTX_XGR_API XGameResult InitializeApiImpl(uint32_t build, uint32_t revision);
+SCARLETTX_XGR_API XGameResult InitializeApiImplEx(uint32_t build, uint32_t revision, uint64_t flags);
+SCARLETTX_XGR_API void UninitializeApiImpl();
+SCARLETTX_XGR_API XGameResult QueryApiImpl(const void* api_id, const void* riid, void** out_impl);
+
 }  // extern "C"
