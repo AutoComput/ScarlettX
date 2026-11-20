@@ -1,0 +1,30 @@
+stages:
+  - build
+  - test
+
+variables:
+  BUILD_DIR: build
+
+build_windows:
+  stage: build
+  tags:
+    - windows
+  script:
+    - cmake -S . -B $BUILD_DIR -G Ninja -DCMAKE_BUILD_TYPE=Release
+    - cmake --build $BUILD_DIR --parallel
+  artifacts:
+    paths:
+      - $BUILD_DIR/
+
+test_windows:
+  stage: test
+  tags:
+    - windows
+  needs:
+    - build_windows
+  script:
+    - ctest --test-dir $BUILD_DIR --output-on-failure
+  artifacts:
+    when: always
+    paths:
+      - $BUILD_DIR/*.ppm

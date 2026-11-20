@@ -1,0 +1,34 @@
+name: ScarlettX CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure CMake
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build ScarlettX + HLE Shims + Synthetic Games
+        run: cmake --build build --parallel
+
+      - name: Run Autonomous Test Suite (Manifest, PE, Kernel, D3D12 WARP, RT/BVH, Boot)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Upload Rendered Frame Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scarlettx-test-frames
+          path: |
+            build/*.ppm
+          if-no-files-found: ignore
