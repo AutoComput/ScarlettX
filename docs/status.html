@@ -108,9 +108,9 @@
 </head>
 <body>
 <main class="status">
-  <h2>Status: 62.4%</h2>
+  <h2>Status: 16.8%</h2>
   <div class="badges">
-    <span class="badge"><span class="k">functions</span><span class="v-fn">252/404</span></span>
+    <span class="badge"><span class="k">functions</span><span class="v-fn">62/369</span></span>
     <span class="badge"><span class="k">exports</span><span class="v-exports">240</span></span>
     <span class="badge"><span class="k">tests</span><span class="v-tests">17/17 passing</span></span>
     <span class="badge"><span class="k">target</span><span class="v-target">Xbox Series X|S (Gen9)</span></span>
@@ -129,24 +129,24 @@
 </main>
 <script>
   const SUBSYSTEMS = [
-    ['d3d12', 'd3d12_xs → PC D3D12 & PSOs', 44, 46],
-    ['XTask', 'XTaskQueue & XAsync', 15, 24],
-    ['Save', 'XGameSave (persistent)', 20, 22],
-    ['XUser', 'XUser & Identity', 13, 24],
-    ['XSys', 'XSystem & Runtime', 17, 18],
-    ['XMem', 'XMem & Threading', 11, 16],
-    ['DXR', 'DXR / XboxBvhBuilder', 12, 14],
-    ['DStor', 'DirectStorage & XVD', 23, 24],
-    ['Audio', 'Audio (XAudio2 / AcpHal)', 23, 32],
-    ['Input', 'Input (GameInput)', 15, 16],
-    ['Midw', 'Middleware (Bink2 / FSR)', 22, 34],
-    ['Net', 'Networking (HTTP / XCurl)', 31, 40],
-    ['PE64', 'PE64 Loader & Auto-Stubs', 6, 6],
-    ['Kern', 'Xbox Unified Memory & KernelX', 0, 14],
+    ['d3d12', 'd3d12_xs → PC D3D12 & PSOs', 11, 50],
+    ['XTask', 'XTaskQueue & XAsync', 7, 20],
+    ['Save', 'XGameSave (offline)', 8, 16],
+    ['XUser', 'XUser & Identity (offline)', 5, 20],
+    ['XSys', 'XSystem & QueryApiImpl', 7, 20],
+    ['XMem', 'XMem & Threading', 4, 20],
+    ['DXR', 'DXR / XboxBvhBuilder', 2, 20],
+    ['DStor', 'DirectStorage & XVD', 4, 20],
+    ['Audio', 'Audio (XAudio2 / AcpHal)', 3, 20],
+    ['Input', 'Input (GameInput)', 3, 20],
+    ['Midw', 'Middleware (Bink2 / FSR)', 1, 20],
+    ['Net', 'Networking (HTTP / XCurl)', 2, 20],
+    ['PE64', 'PE64 Loader & Auto-Stubs', 5, 11],
+    ['Kern', 'Xbox Unified Memory & KernelX', 0, 16],
     ['XS2', 'RDNA2 XS2 Shader Lifting', 0, 16],
     ['Crypt', 'Retail XVC/XVD Crypto', 0, 12],
     ['Codec', 'Production Codecs (XMA2/GDeflate/Bink)', 0, 16],
-    ['Vulk', 'Hardware DXR & Vulkan Backend', 0, 14],
+    ['Vulk', 'Hardware DXR & Vulkan Backend', 0, 16],
     ['XSAPI', 'Live Xbox Services (XSAPI/WinRT)', 0, 16],
   ];
   const level = p => p >= 0.8 ? 'lv3' : p >= 0.6 ? 'lv2' : p >= 0.4 ? 'lv1' : 'lv0';

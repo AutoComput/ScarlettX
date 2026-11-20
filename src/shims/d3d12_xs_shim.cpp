@@ -412,7 +412,7 @@ constexpr std::array<ComVtableFn, sizeof...(Is) + 3> MakeDescHeapProxyVtable(std
 std::array<ComVtableFn, 16> BuildDescHeapProxyVtable() {
     auto vtbl = MakeDescHeapProxyVtable(std::make_index_sequence<13>{});
     vtbl[6] = &DescHeapProxySetName;      // +0x30
-    vtbl[9] = &DescHeapProxyGetCPUStart;  // +0x48 (verified in ConceptDestruction.exe: returns SIZE_T in RAX)
+    vtbl[9] = &DescHeapProxyGetCPUStart;  // +0x48 (verified in real Gen9 title: returns SIZE_T in RAX)
     vtbl[10] = &DescHeapProxyGetGPUStart; // +0x50
     return vtbl;
 }
@@ -1463,7 +1463,7 @@ std::array<ComVtableFn, 96> BuildCmdListVtable() {
     vtbl[24] = &CmdListOMSetStencilRef;
     vtbl[25] = &CmdListSetPipelineState;
     vtbl[26] = &CmdListResourceBarrier;
-    // Xbox d3d12_xs shifts PC slots >= 28 by +4 (verified from Concept Destruction traces).
+    // Xbox d3d12_xs shifts PC slots >= 28 by +4 (verified from real Gen9 title traces).
     vtbl[32] = &CmdListSetDescriptorHeaps;
     vtbl[33] = &CmdListSetComputeRootSignature;
     vtbl[34] = &CmdListSetGraphicsRootSignature;

@@ -9,31 +9,31 @@
 
 ![ScarlettX Status](docs/status.svg)
 
-![Status of the game Concept Destruction](docs/status_concept_destruction.svg)
+![Status of Indie Game](docs/status_indie_game.svg)
 
-**Emulator Status:** `62.4%` (252 of 404 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `41.3%` (19 of 46 bring-up milestones) · **Exports:** `240` · **Tests:** `17/17` passing · **Target:** `Xbox Series X|S (Gen9)`
+**Emulator Status:** `16.8%` (62 of 369 tracked milestones, including unimplemented `0%` subsystems) · **Indie Game (Gen9 Unity IL2CPP):** `47.8%` (22 of 46 bring-up milestones) · **Exports:** `240` · **Tests:** `17/17` passing · **Target:** `Xbox Series X|S (Gen9)`
 
 | Subsystem | Category | Progress | Coverage | Details |
 | :--- | :--- | :---: | :---: | :--- |
-| **PE64 Loader & Auto-Stubs** | `Core` | `6 of 6` | `100%` | PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks |
-| **DirectStorage & XVD** | `Storage` | `23 of 24` | `96%` | 22 DStorage exports + unencrypted XVD parser/PackageVfs mounting; async worker queues, fence/status arrays, cancellation, synthetic LZ-RLE test codec |
-| **d3d12_xs → PC D3D12 & PSOs** | `Graphics` | `44 of 46` | `96%` | 43 exports + DXIL/DXBC container parser & Xbox-chunk stripper; root signatures, descriptor heaps, graphics/compute/software-DXR PSOs, pipeline cache, WARP backend |
-| **XSystem & Runtime** | `xgameruntime` | `17 of 18` | `94%` | 17 exports; Scarlett Anaconda device info, runtime/analytics, handle validation |
-| **Input (GameInput)** | `Input` | `15 of 16` | `94%` | 15 exports; virtual Xbox Series controller & keyboard, reading history (Current/Next/Previous), state injection, 4-motor impulse-trigger rumble |
-| **XGameSave (persistent)** | `xgameruntime` | `20 of 22` | `91%` | 20 exports; disk-backed containers, sync/async blob R/W, quota, delete |
-| **DXR / XboxBvhBuilder** | `Graphics` | `12 of 14` | `86%` | 8 BVH exports + DXR AS prebuild/build/destroy, BLAS update, single-ray trace, deterministic software BVH fallback (hardware DXR requires capable GPU) |
-| **Networking (HTTP / XCurl)** | `Networking` | `31 of 40` | `78%` | 19 libHttpClient.GDK + 12 XCurl exports; deterministic offline mock registry, async callbacks, headers, fallback responses |
-| **Audio (XAudio2 / AcpHal)** | `Media` | `23 of 32` | `72%` | 23 exports (XAudio2_9 ordinal #1 + AcpHal.dll APU/SHAPE shims); headless PCM mixer, WAV writer, fail-closed real-title COM guard, synthetic XMA2 test decoder |
-| **XMem & Threading** | `xgameruntime` | `11 of 16` | `69%` | 11 exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state |
-| **Middleware (Bink2 / FSR)** | `Middleware` | `22 of 34` | `65%` | 12 Bink2Scarlett + 10 amd_fidelityfx_loader/upscaler_xbox exports; deterministic offline HLE shims (synthetic RGBA/BGRA frames, bilinear upscale & hash) |
-| **XTaskQueue & XAsync** | `xgameruntime` | `15 of 24` | `62%` | 11 XTaskQueue + 4 XAsync exports (manual/threadpool/delayed/monitors/cancel) |
-| **XUser & Identity** | `xgameruntime` | `13 of 24` | `54%` | 13 exports; synthetic Xbox Live profile, XUID, gamertag components, privileges |
-| **Hardware DXR & Vulkan Backend** | `Graphics` | `0 of 14` | `0%` | Hardware GPU ray tracing (DXR Tier 1.1) and cross-platform Vulkan / vkd3d-proton backend |
+| **XGameSave (offline)** | `xgameruntime` | `8 of 16` | `50%` | 20 exports; local disk-backed containers & sync/async blob R/W (not yet verified in a real commercial title) |
+| **PE64 Loader & Auto-Stubs** | `Core` | `5 of 11` | `45%` | PE32+ mapping, relocs, named/ordinal IAT, API-sets, auto-stubs; unwind tables, implicit TLS & PEB image base pending |
+| **XSystem & QueryApiImpl** | `xgameruntime` | `7 of 20` | `35%` | 17 exports + 2 reverse-engineered QueryApiImpl COM tables; additional runtime GUIDs still E_NOINTERFACE |
+| **XTaskQueue & XAsync** | `xgameruntime` | `7 of 20` | `35%` | 11 XTaskQueue + 4 XAsync exports; manual/threadpool queues working, ABI/teardown hardening pending |
+| **XUser & Identity (offline)** | `xgameruntime` | `5 of 20` | `25%` | 13 exports; offline synthetic Xbox Live profile, XUID & gamertag stubs only |
+| **d3d12_xs → PC D3D12 & PSOs** | `Graphics` | `11 of 50` | `22%` | Xbox COM proxies for device/queues/fences/heaps/PSOs/cmdlists/PresentX swapchain; boots an unencrypted indie title to PresentX, but frames are still white (descriptor translation, sync & tiled copies pending) |
+| **DirectStorage & XVD** | `Storage` | `4 of 20` | `20%` | 22 dstorage_xs exports + unencrypted XVD parser/PackageVfs; synthetic LZ-RLE test codec only (no GDeflate/BCPack) |
+| **XMem & Threading** | `xgameruntime` | `4 of 20` | `20%` | 11 exports; basic alloc hooks & VirtualAlloc/Free (no Xbox MEM_GRAPHICS or physical-virtual aliasing) |
+| **Audio (XAudio2 / AcpHal)** | `Media` | `3 of 20` | `15%` | 23 exports; AcpHal APU/SHAPE allocators work on real title, XAudio2_9 ordinal #1 still fails closed (E_NOTIMPL) |
+| **Input (GameInput)** | `Input` | `3 of 20` | `15%` | 15 exports (ordinal #1); virtual controller scaffold only, live host XInput/keyboard bridge pending |
+| **DXR / XboxBvhBuilder** | `Graphics` | `2 of 20` | `10%` | 8 synthetic BVH exports + software BVH test fallback only; real XboxBvhBuilder ABI & GPU DXR unimplemented |
+| **Networking (HTTP / XCurl)** | `Networking` | `2 of 20` | `10%` | 19 libHttpClient + 12 XCurl offline mock shims only (no live HTTP/TLS transport) |
+| **Middleware (Bink2 / FSR)** | `Middleware` | `1 of 20` | `5%` | 12 Bink2 + 10 FidelityFX offline test stubs only (no real video decoding or GPU upscaling) |
+| **Hardware DXR & Vulkan Backend** | `Graphics` | `0 of 16` | `0%` | Hardware GPU ray tracing (DXR Tier 1.1) and cross-platform Vulkan / vkd3d-proton backend |
 | **Live Xbox Services (XSAPI/WinRT)** | `Platform` | `0 of 16` | `0%` | Full Xbl* Xbox Live services, WinRT runtime activation, achievements, multiplayer |
 | **Production Codecs (XMA2/GDeflate/Bink)** | `Media` | `0 of 16` | `0%` | Native SHAPE XMA2 transform audio, hardware GDeflate/BCPack, production Bink2 & GPU FSR |
 | **RDNA2 XS2 Shader Lifting** | `Graphics` | `0 of 16` | `0%` | Precompiled RDNA2/Scarlett GPU microcode lifting to PC DXIL or SPIR-V |
 | **Retail XVC/XVD Crypto** | `Storage` | `0 of 12` | `0%` | Encrypted & digitally signed retail .xvc/.xvd package decryption and verification |
-| **Xbox Unified Memory & KernelX** | `Platform` | `0 of 14` | `0%` | MEM_GRAPHICS, 64 KB / 4 MB physical-virtual aliasing, full Game OS kernel services |
+| **Xbox Unified Memory & KernelX** | `Platform` | `0 of 16` | `0%` | MEM_GRAPHICS, 64 KB / 4 MB physical-virtual aliasing, full Game OS kernel services |
 
 > **Not started (0%):** Xbox unified memory (`MEM_GRAPHICS`) & full KernelX, precompiled RDNA2 `XS2` ISA lifting, encrypted retail XVC/XVD decryption, production GDeflate/XMA2/Bink decoding, hardware DXR & Vulkan backend, and live XSAPI/WinRT services. Passing synthetic tests do not imply commercial retail title execution.
 
@@ -58,18 +58,17 @@ Because Xbox Series X|S executables are native **x86-64 PE32+** binaries targeti
 | **Networking (`libHttpClient` / `XCurl`)** | `libHttpClient.GDK.dll` (init, mock registry, request setup, async callbacks, offline fallback), `XCurl.dll` (easy handle lifecycle, `curl_easy_setopt`, write callbacks, `curl_easy_getinfo`, slist headers, mock/offline responses) | Synthetic scaffold + tests |
 | **End-to-End Integration** | `scarlett_arena` synthetic Gen9 game booting via in-process PE64 mapper (with isolated guest `atexit` cleanup) and child process across `xgameruntime`, `dstorage_xs`/XVD, `GameInput`, `d3d12_xs` + software BVH RT, `XAudio2`, and `XGameSave` | Synthetic E2E + tests |
 
-### Real-Title Bring-Up (Verified Observations — Concept Destruction)
+### Real-Title Bring-Up (Verified Observations — Unencrypted Indie Game)
 
-Testing against an unencrypted commercial Xbox Series X|S (`Scarlett`) Unity IL2CPP title (**Concept Destruction**, kept strictly outside the repository) established:
+Testing against an unencrypted commercial Xbox Series X|S (`Scarlett`) Unity IL2CPP indie game (kept strictly outside the repository) established:
 
 - **Phase 1 — Static inspection & image mapping:** PE64 image maps with 405 imported symbols and 3 remaining auto-stubs; ScarlettX's `d3d12_xs.dll`, `xg_xs.dll`, and `AcpHal.dll` resolve all static Xbox imports.
 - **Phase 2 — `QueryApiImpl` COM interface (`{073B7DCB-1FCF-4030-94BE-E3C9EB623428}`):** Reverse-engineered the target's Windows x64 register ABI (`RCX=api_id`, `RDX=riid`, `R8=out_impl`) and vtable offsets (`+0x00`/`+0x08`/`+0x10`, `+0x30`, `+0x60`, `+0x80`, `+0x88`, `+0xE8`). Implemented a ScarlettX-owned 32-slot guest COM object in `xgameruntime.dll` with dedicated ABI tests (`test_query_api_impl`).
 - **Phase 3 — Second `QueryApiImpl` GUID, `AcpHal`, and `d3d12_xs` Proxy Bring-Up (In Progress):**
   - `QueryApiImpl({37E56907-2F10-41E8-B72F-36EDB185331A})` now returns `S_OK` via a ScarlettX-owned guest COM object (`+0x80`/`+0x30`/`+0x38`/`+0x88` observed; two additional runtime GUIDs `{973A344E-...}` and `{E349BD1A-...}` still return `E_NOINTERFACE`).
-  - `AcpHal` shape-context allocation succeeds and `d3d12_xs` guest-facing COM proxies advance into Unity's D3D12 initialization: creating the device, queues (raw types `0x2` and provisional `0x10`), fences, descriptor heaps, command signatures, allocators, root signatures, graphics PSOs, 1920×1080 render targets, frame events (`SetFrameIntervalX`/`ScheduleFrameEventX`), committed resources, `XGComputeOptimalSwizzleMode`/`XGCreateTexture2DComputer`, and recording uploads.
-  - Adding PC resource-state sanitization for texture barriers resolved the earlier `D3D12: Removing Device` (`0x887A0005`) failure on the latest trace; the target now completes 13 of 17 `CmdList::Close` calls with `S_OK` and executes 11 `ExecuteCommandLists` submissions.
-  - **Active blocker:** The target still exits before `PresentX` (`0` calls observed) with an access violation (`0xC0000005` at executable VA `0x140095411`). Unimplemented command-list vtable slots (`21`, `22`, `50`, `51`, `52`, `67`, `83`) and the copy-texture ABI are currently under investigation.
-- **Current classification:** **Static inspection + image mapping + early startup trace** (not yet first frame, partial boot, or playable gameplay).
+  - `AcpHal` shape-context allocation succeeds and `d3d12_xs` guest-facing COM proxies run past Unity's D3D12 initialization with zero crashes or device removals — executing 61,000+ `ExecuteCommandLists`, 102,000+ `CmdList::Close`, and 350+ triple-buffered 1920×1080 `PresentX` calls (`CommandQueue::vtable[30]`) into a Win32/DXGI swapchain.
+  - **Active blocker:** Frame captures are still all-white (`0` non-white pixels). Descriptor-handle/heap-type translation (`OMSetRenderTargets` / `CopyDescriptorsSimple`), render-queue synchronization before `PresentX`, and Xbox tiled-texture copy semantics are under investigation.
+- **Current classification:** **Boots to `PresentX` with white frames** (not yet visible rendered output or playable gameplay).
 
 ### Current Limitations
 

@@ -192,133 +192,127 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             name="d3d12_xs → PC D3D12 & PSOs",
             short_name="d3d12",
             category="Graphics",
-            implemented=d3d_cnt + shader_ir_ready,
-            target=46,
+            implemented=11,
+            target=50,
             notes=(
-                f"{d3d_cnt} exports + DXIL/DXBC container parser & Xbox-chunk stripper; "
-                "root signatures, descriptor heaps, graphics/compute/software-DXR PSOs, pipeline cache, WARP backend"
+                "Xbox COM proxies for device/queues/fences/heaps/PSOs/cmdlists/PresentX swapchain; "
+                "boots an unencrypted indie title to PresentX, but frames are still white (descriptor translation, sync & tiled copies pending)"
             ),
         ),
         Subsystem(
             name="XTaskQueue & XAsync",
             short_name="XTask",
             category="xgameruntime",
-            implemented=xtask_cnt + xasync_cnt,
-            target=24,
-            notes=f"{xtask_cnt} XTaskQueue + {xasync_cnt} XAsync exports (manual/threadpool/delayed/monitors/cancel)",
+            implemented=7,
+            target=20,
+            notes=f"{xtask_cnt} XTaskQueue + {xasync_cnt} XAsync exports; manual/threadpool queues working, ABI/teardown hardening pending",
         ),
         Subsystem(
-            name="XGameSave (persistent)",
+            name="XGameSave (offline)",
             short_name="Save",
             category="xgameruntime",
-            implemented=xgamesave_cnt,
-            target=22,
-            notes=f"{xgamesave_cnt} exports; disk-backed containers, sync/async blob R/W, quota, delete",
+            implemented=8,
+            target=16,
+            notes=f"{xgamesave_cnt} exports; local disk-backed containers & sync/async blob R/W (not yet verified in a real commercial title)",
         ),
         Subsystem(
-            name="XUser & Identity",
+            name="XUser & Identity (offline)",
             short_name="XUser",
             category="xgameruntime",
-            implemented=xuser_cnt,
-            target=24,
-            notes=f"{xuser_cnt} exports; synthetic Xbox Live profile, XUID, gamertag components, privileges",
+            implemented=5,
+            target=20,
+            notes=f"{xuser_cnt} exports; offline synthetic Xbox Live profile, XUID & gamertag stubs only",
         ),
         Subsystem(
-            name="XSystem & Runtime",
+            name="XSystem & QueryApiImpl",
             short_name="XSys",
             category="xgameruntime",
-            implemented=xruntime_cnt + xsystem_cnt,
-            target=18,
-            notes=f"{xruntime_cnt + xsystem_cnt} exports; Scarlett Anaconda device info, runtime/analytics, handle validation",
+            implemented=7,
+            target=20,
+            notes=f"{xruntime_cnt + xsystem_cnt} exports + 2 reverse-engineered QueryApiImpl COM tables; additional runtime GUIDs still E_NOINTERFACE",
         ),
         Subsystem(
             name="XMem & Threading",
             short_name="XMem",
             category="xgameruntime",
-            implemented=xmem_cnt,
-            target=16,
-            notes=f"{xmem_cnt} exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state",
+            implemented=4,
+            target=20,
+            notes=f"{xmem_cnt} exports; basic alloc hooks & VirtualAlloc/Free (no Xbox MEM_GRAPHICS or physical-virtual aliasing)",
         ),
         Subsystem(
             name="DXR / XboxBvhBuilder",
             short_name="DXR",
             category="Graphics",
-            implemented=bvh_cnt + 4,
-            target=14,
+            implemented=2,
+            target=20,
             notes=(
-                f"{bvh_cnt} BVH exports + DXR AS prebuild/build/destroy, BLAS update, single-ray trace, "
-                "deterministic software BVH fallback (hardware DXR requires capable GPU)"
+                f"{bvh_cnt} synthetic BVH exports + software BVH test fallback only; real XboxBvhBuilder ABI & GPU DXR unimplemented"
             ),
         ),
         Subsystem(
             name="DirectStorage & XVD",
             short_name="DStor",
             category="Storage",
-            implemented=ds_cnt + (1 if (ROOT / "src/loader/xvd_container.cpp").exists() else 0),
-            target=24,
+            implemented=4,
+            target=20,
             notes=(
-                f"{ds_cnt} DStorage exports + unencrypted XVD parser/PackageVfs mounting; "
-                "async worker queues, fence/status arrays, cancellation, synthetic LZ-RLE test codec"
+                f"{ds_cnt} dstorage_xs exports + unencrypted XVD parser/PackageVfs; synthetic LZ-RLE test codec only (no GDeflate/BCPack)"
             ),
         ),
         Subsystem(
             name="Audio (XAudio2 / AcpHal)",
             short_name="Audio",
             category="Media",
-            implemented=xa_cnt,
-            target=32,
+            implemented=3,
+            target=20,
             notes=(
-                f"{xa_cnt} exports (XAudio2_9 ordinal #1 + AcpHal.dll APU/SHAPE shims); "
-                "headless PCM mixer, WAV writer, fail-closed real-title COM guard, synthetic XMA2 test decoder"
+                f"{xa_cnt} exports; AcpHal APU/SHAPE allocators work on real title, XAudio2_9 ordinal #1 still fails closed (E_NOTIMPL)"
             ),
         ),
         Subsystem(
             name="Input (GameInput)",
             short_name="Input",
             category="Input",
-            implemented=gi_cnt,
-            target=16,
+            implemented=3,
+            target=20,
             notes=(
-                f"{gi_cnt} exports; virtual Xbox Series controller & keyboard, reading history "
-                "(Current/Next/Previous), state injection, 4-motor impulse-trigger rumble"
+                f"{gi_cnt} exports (ordinal #1); virtual controller scaffold only, live host XInput/keyboard bridge pending"
             ),
         ),
         Subsystem(
             name="Middleware (Bink2 / FSR)",
             short_name="Midw",
             category="Middleware",
-            implemented=bink_cnt + ffx_cnt,
-            target=34,
+            implemented=1,
+            target=20,
             notes=(
-                f"{bink_cnt} Bink2Scarlett + {ffx_cnt} amd_fidelityfx_loader/upscaler_xbox exports; "
-                "deterministic offline HLE shims (synthetic RGBA/BGRA frames, bilinear upscale & hash)"
+                f"{bink_cnt} Bink2 + {ffx_cnt} FidelityFX offline test stubs only (no real video decoding or GPU upscaling)"
             ),
         ),
         Subsystem(
             name="Networking (HTTP / XCurl)",
             short_name="Net",
             category="Networking",
-            implemented=hc_cnt + curl_cnt,
-            target=40,
+            implemented=2,
+            target=20,
             notes=(
-                f"{hc_cnt} libHttpClient.GDK + {curl_cnt} XCurl exports; "
-                "deterministic offline mock registry, async callbacks, headers, fallback responses"
+                f"{hc_cnt} libHttpClient + {curl_cnt} XCurl offline mock shims only (no live HTTP/TLS transport)"
             ),
         ),
         Subsystem(
             name="PE64 Loader & Auto-Stubs",
             short_name="PE64",
             category="Core",
-            implemented=loader_features,
-            target=6,
-            notes="PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks",
+            implemented=5,
+            target=11,
+            notes="PE32+ mapping, relocs, named/ordinal IAT, API-sets, auto-stubs; unwind tables, implicit TLS & PEB image base pending",
         ),
         Subsystem(
             name="Xbox Unified Memory & KernelX",
             short_name="Kern",
             category="Platform",
             implemented=0,
-            target=14,
+            target=16,
             notes="MEM_GRAPHICS, 64 KB / 4 MB physical-virtual aliasing, full Game OS kernel services",
         ),
         Subsystem(
@@ -350,7 +344,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             short_name="Vulk",
             category="Graphics",
             implemented=0,
-            target=14,
+            target=16,
             notes="Hardware GPU ray tracing (DXR Tier 1.1) and cross-platform Vulkan / vkd3d-proton backend",
         ),
         Subsystem(
@@ -366,8 +360,8 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
     return subsystems, total_exports, test_count
 
 
-def collect_concept_destruction_metrics() -> list[Subsystem]:
-    """Verified real-title bring-up progress for Concept Destruction (Scarlett Gen9 Unity IL2CPP)."""
+def collect_indie_game_metrics() -> list[Subsystem]:
+    """Verified real-title bring-up progress for an unencrypted Scarlett Gen9 Unity IL2CPP indie game."""
     return [
         Subsystem(
             name="PE64 Mapping & Imports",
@@ -405,17 +399,17 @@ def collect_concept_destruction_metrics() -> list[Subsystem]:
             name="d3d12_xs CmdList & Uploads",
             short_name="CmdL",
             category="Graphics",
-            implemented=3,
+            implemented=5,
             target=10,
-            notes="CreateCommandListX, Close (13/17 S_OK), ExecuteCommandLists (11x); slots 21/22/50/51/52/67/83 & copy ABI pending",
+            notes="0x1000 proxy layout, Close (102k+ calls) & ExecuteCommandLists (61k+ calls); descriptor translation & tiled copy ABI pending",
         ),
         Subsystem(
             name="Presentation & First Frame",
             short_name="Pres",
             category="Graphics",
-            implemented=0,
+            implemented=1,
             target=5,
-            notes="PresentX not yet reached; swapchain output, first rendered frame, WaitFrameEventX pacing pending",
+            notes="Reaches triple-buffered PresentX (350+ calls) & DXGI swapchain, but frame captures are still all-white",
         ),
         Subsystem(
             name="Audio & Input (Runtime)",
@@ -860,10 +854,10 @@ def render_markdown_status(
         "",
         "![ScarlettX Status](docs/status.svg)",
         "",
-        "![Status of the game Concept Destruction](docs/status_concept_destruction.svg)",
+        "![Status of Indie Game](docs/status_indie_game.svg)",
         "",
-        f"**Emulator Status:** `{overall_pct:.1f}%` ({total_impl} of {total_target} tracked functions, including unimplemented `0%` subsystems) · "
-        f"**Concept Destruction:** `{cd_pct:.1f}%` ({cd_impl} of {cd_target} bring-up milestones) · "
+        f"**Emulator Status:** `{overall_pct:.1f}%` ({total_impl} of {total_target} tracked milestones, including unimplemented `0%` subsystems) · "
+        f"**Indie Game (Gen9 Unity IL2CPP):** `{cd_pct:.1f}%` ({cd_impl} of {cd_target} bring-up milestones) · "
         f"**Exports:** `{total_exports}` · "
         f"**Tests:** `{test_count}/{test_count}` passing · "
         "**Target:** `Xbox Series X|S (Gen9)`",
@@ -889,12 +883,12 @@ def render_markdown_status(
 
 def main() -> None:
     subsystems, total_exports, test_count = collect_metrics()
-    cd_subsystems = collect_concept_destruction_metrics()
+    cd_subsystems = collect_indie_game_metrics()
 
     total_impl = sum(s.implemented for s in subsystems)
     total_target = sum(s.target for s in subsystems)
     main_badges = [
-        ("functions", f"{total_impl}/{total_target}", BADGE_FN, True),
+        ("milestones", f"{total_impl}/{total_target}", BADGE_FN, True),
         ("exports", str(total_exports), BADGE_EXPORTS, False),
         ("tests", f"{test_count}/{test_count} passing", BADGE_TESTS, False),
         ("target", "Xbox Series X|S (Gen9)", BADGE_TARGET, False),
@@ -912,23 +906,23 @@ def main() -> None:
     cd_target = sum(s.target for s in cd_subsystems)
     cd_badges = [
         ("milestones", f"{cd_impl}/{cd_target}", BADGE_FN, True),
-        ("phase", "Phase 3: D3D12 init", BADGE_EXPORTS, False),
-        ("state", "Early startup trace", BADGE_TARGET, False),
-        ("target", "Concept Destruction (Gen9)", BADGE_TESTS, False),
+        ("phase", "Phase 3: PresentX (white frames)", BADGE_EXPORTS, False),
+        ("state", "Boots to PresentX", BADGE_TARGET, False),
+        ("target", "Indie Game (Gen9 Unity IL2CPP)", BADGE_TESTS, False),
     ]
     cd_svg = render_svg(
         cd_subsystems,
         badges=cd_badges,
-        heading_prefix="Status of the game Concept Destruction",
+        heading_prefix="Status of Indie Game",
         callout_lead="Current blocker:",
-        callout_line1="Reaches D3D12 CmdList Close/ExecuteCommandLists, then hits 0xC0000005 before PresentX;",
-        callout_line2="missing CmdList vtable slots (21, 22, 50, 51, 52, 67, 83) and copy ABI under investigation.",
+        callout_line1="Reaches triple-buffered PresentX (zero crashes/device removals), but frame captures are still all-white;",
+        callout_line2="descriptor-handle translation and render-queue synchronization before PresentX are under investigation.",
     )
 
     html_doc = render_html(subsystems, total_exports, test_count)
 
     out_svg = ROOT / "docs/status.svg"
-    out_cd_svg = ROOT / "docs/status_concept_destruction.svg"
+    out_cd_svg = ROOT / "docs/status_indie_game.svg"
     out_html = ROOT / "docs/status.html"
     out_svg.parent.mkdir(parents=True, exist_ok=True)
     out_svg.write_text(svg, encoding="utf-8")
