@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <iostream>
 
+#include "scarlettx/loader/pe_mapper.h"
+
 #if defined(_WIN32)
 #include <windows.h>
 #endif
@@ -98,6 +100,38 @@ Status Emulator::BootPackage(const std::string& package_dir) {
     }
     if (!config_.raster_dump_path.empty()) {
         SetEnvironmentVariableA("SCARLETTX_RASTER_DUMP", config_.raster_dump_path.c_str());
+    }
+
+    if (config_.in_process) {
+        MappedPeImage image;
+        HleSymbolRegistry hle_registry;
+        PeMapOptions map_opts;
+        map_opts.force_relocate = config_.force_relocate;
+        map_opts.auto_stub_missing = true;
+        map_opts.shim_directory = shim_dir;
+
+        Status map_st = image.MapFile(report.executable_path, redirects_, hle_registry, map_opts);
+        if (!map_st.ok()) {
+            return map_st;
+        }
+        std::cout << "[ScarlettX][loader] Mapped " << report.executable_path << " at 0x"
+                  << std::hex << image.MappedBase() << std::dec
+                  << " (relocated=" << (image.WasRelocated() ? "yes" : "no")
+                  << ", relocs=" << image.RelocationsApplied()
+                  << ", imports=" << image.Resolutions().size()
+                  << ", stubs=" << image.Stubs().StubCount() << ")\n";
+
+        int exit_code = 0;
+        Status call_st = image.CallExportedEntry(config_.in_process_entry, exit_code);
+        if (!call_st.ok()) {
+            return call_st;
+        }
+        if (exit_code != 0) {
+            return Status::Error(StatusCode::DeviceError,
+                                 "In-process guest exited with non-zero code: " +
+                                     std::to_string(exit_code));
+        }
+        return Status::Ok();
     }
 
     STARTUPINFOA si{};

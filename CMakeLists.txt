@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ScarlettX VERSION 0.1.0 LANGUAGES CXX)
+project(ScarlettX VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,6 +12,8 @@ add_library(scarlettx_core STATIC
     src/core/status.cpp
     src/loader/game_config.cpp
     src/loader/pe_loader.cpp
+    src/loader/pe_mapper.cpp
+    src/loader/stub_thunk.cpp
     src/loader/package_vfs.cpp
     src/kernel/xmemory.cpp
     src/kernel/xruntime.cpp
@@ -104,6 +106,55 @@ add_custom_command(TARGET rt_showcase POST_BUILD
         "$<TARGET_FILE_DIR:rt_showcase>/MicrosoftGame.Config"
 )
 
+# Synthetic Scarlett Game 3: iat_probe (in-process PE64 + ordinal + auto-stub test target)
+if(WIN32)
+    function(scarlettx_add_dummy_import_lib target_name c_src def_file)
+        add_library(${target_name} SHARED ${c_src} ${def_file})
+        set_target_properties(${target_name} PROPERTIES
+            PREFIX ""
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dummy_import_dlls"
+            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dummy_import_libs"
+        )
+        # Remove the dummy runtime DLL so it cannot be loaded by Windows LoadLibrary;
+        # only its import library (.lib/.dll.a) is used at link time.
+        add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E remove -f "$<TARGET_FILE:${target_name}>"
+        )
+    endfunction()
+
+    scarlettx_add_dummy_import_lib(xordinal_hle
+        tests/synthetic_games/iat_probe/xordinal_hle_stub.c
+        tests/synthetic_games/iat_probe/xordinal_hle.def
+    )
+    scarlettx_add_dummy_import_lib(xgameoverlay_missing
+        tests/synthetic_games/iat_probe/xgameoverlay_missing_stub.c
+        tests/synthetic_games/iat_probe/xgameoverlay_missing.def
+    )
+    scarlettx_add_dummy_import_lib(xtelemetry_missing
+        tests/synthetic_games/iat_probe/xtelemetry_missing_stub.c
+        tests/synthetic_games/iat_probe/xtelemetry_missing.def
+    )
+
+    add_library(iat_probe SHARED
+        tests/synthetic_games/iat_probe/iat_probe.cpp
+    )
+    target_link_libraries(iat_probe PRIVATE
+        xgameruntime
+        xordinal_hle
+        xgameoverlay_missing
+        xtelemetry_missing
+    )
+    set_target_properties(iat_probe PROPERTIES
+        PREFIX ""
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/packages/iat_probe"
+    )
+    add_custom_command(TARGET iat_probe POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/synthetic_games/iat_probe/MicrosoftGame.Config"
+            "${CMAKE_BINARY_DIR}/packages/iat_probe/MicrosoftGame.Config"
+    )
+endif()
+
 # ---------------------------------------------------------------------------
 # Autonomous Test Suite
 # ---------------------------------------------------------------------------
@@ -124,6 +175,11 @@ endfunction()
 scarlettx_add_test(test_game_config tests/test_game_config.cpp)
 scarlettx_add_test(test_pe_loader tests/test_pe_loader.cpp)
 add_dependencies(test_pe_loader hello_scarlett rt_showcase)
+
+if(WIN32)
+    scarlettx_add_test(test_inproc_loader tests/test_inproc_loader.cpp)
+    add_dependencies(test_inproc_loader iat_probe xgameruntime)
+endif()
 
 scarlettx_add_test(test_kernel_hle tests/test_kernel_hle.cpp)
 scarlettx_add_test(test_d3d12_warp tests/test_d3d12_warp.cpp)

@@ -11,7 +11,7 @@ void PrintUsage() {
     std::cout << "ScarlettX — Xbox Series X|S (Scarlett) HLE Emulator\n"
               << "Usage:\n"
               << "  scarlettx inspect <package_dir>\n"
-              << "  scarlettx boot <package_dir> [--headless] [--frames N] [--rt-dump path.ppm] [--raster-dump path.ppm]\n"
+              << "  scarlettx boot <package_dir> [--headless] [--in-process] [--force-relocate] [--frames N] [--rt-dump path.ppm] [--raster-dump path.ppm]\n"
               << "  scarlettx diag\n";
 }
 
@@ -66,6 +66,10 @@ int main(int argc, char** argv) {
             const std::string arg = argv[i];
             if (arg == "--headless") {
                 cfg.headless = true;
+            } else if (arg == "--in-process") {
+                cfg.in_process = true;
+            } else if (arg == "--force-relocate") {
+                cfg.force_relocate = true;
             } else if (arg == "--frames" && i + 1 < argc) {
                 cfg.max_frames = static_cast<uint32_t>(std::stoul(argv[++i]));
             } else if (arg == "--rt-dump" && i + 1 < argc) {
