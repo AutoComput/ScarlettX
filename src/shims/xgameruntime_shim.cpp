@@ -1701,6 +1701,198 @@ static void FormatGuid(const void* guid_ptr, char* out, size_t out_size) {
                   d1, d2, d3, b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
 }
 
+}  // extern "C"
+
+namespace {
+
+struct XgrGuid {
+    uint32_t data1;
+    uint16_t data2;
+    uint16_t data3;
+    uint8_t data4[8];
+};
+
+static_assert(sizeof(XgrGuid) == 16, "GUID must be 16 bytes");
+
+bool GuidEquals(const void* a_ptr, const XgrGuid& b) {
+    if (!a_ptr) {
+        return false;
+    }
+    return std::memcmp(a_ptr, &b, sizeof(XgrGuid)) == 0;
+}
+
+// Standard COM IUnknown IID: {00000000-0000-0000-C000-000000000046}
+constexpr XgrGuid kIidIUnknown = {
+    0x00000000u, 0x0000u, 0x0000u, {0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+
+// Observed GDK ApiImpl GUID from real Scarlett target disassembly:
+//   {073B7DCB-1FCF-4030-94BE-E3C9EB623428}
+// Official Microsoft interface name is not asserted; vtable offsets and
+// Windows x64 register ABIs below are derived from target call sites and
+// verified against live startup execution (allocates handle at +0x60,
+// polls at +0x80, releases handle at +0x88, releases COM wrapper at +0x10):
+//   +0x00 (slot  0): QueryInterface (this, riid, ppv) -> HRESULT
+//   +0x08 (slot  1): AddRef (this) -> uint32_t
+//   +0x10 (slot  2): Release (this) -> uint32_t
+//   +0x30 (slot  6): (this, arg1, arg2) -> HRESULT (delegates to XAsyncRun)
+//   +0x60 (slot 12): (this, u32, u32, out_handle*) -> HRESULT (delegates to XTaskQueueCreate)
+//   +0x80 (slot 16): (this, handle, u32, u32) -> bool/u8 (delegates to XTaskQueueDispatch)
+//   +0x88 (slot 17): (this, handle) -> void (delegates to XTaskQueueCloseHandle)
+//   +0xE8 (slot 29): (this) -> void (caller ignores result; safe no-op)
+constexpr XgrGuid kGuidApiImpl073B7DCB = {
+    0x073B7DCBu, 0x1FCFu, 0x4030u, {0x94, 0xBE, 0xE3, 0xC9, 0xEB, 0x62, 0x34, 0x28}};
+
+struct XgrApiImpl073B7DCBVtable {
+    void* slots[32];
+};
+
+struct XgrApiImpl073B7DCB {
+    const XgrApiImpl073B7DCBVtable* vtbl;
+    std::atomic<uint32_t> ref_count{1};
+};
+
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_QueryInterface(
+    void* self_ptr,
+    const void* riid,
+    void** ppv) {
+    if (!ppv) {
+        return XGR_E_POINTER;
+    }
+    *ppv = nullptr;
+    if (!self_ptr || !riid) {
+        return XGR_E_INVALIDARG;
+    }
+    if (GuidEquals(riid, kGuidApiImpl073B7DCB) || GuidEquals(riid, kIidIUnknown)) {
+        auto* self = static_cast<XgrApiImpl073B7DCB*>(self_ptr);
+        self->ref_count.fetch_add(1, std::memory_order_relaxed);
+        *ppv = self;
+        return XGR_S_OK;
+    }
+    return static_cast<XGameResult>(0x80004002u);  // E_NOINTERFACE
+}
+
+uint32_t SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_AddRef(void* self_ptr) {
+    if (!self_ptr) {
+        return 0;
+    }
+    auto* self = static_cast<XgrApiImpl073B7DCB*>(self_ptr);
+    return self->ref_count.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+uint32_t SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Release(void* self_ptr) {
+    if (!self_ptr) {
+        return 0;
+    }
+    auto* self = static_cast<XgrApiImpl073B7DCB*>(self_ptr);
+    const uint32_t remaining = self->ref_count.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (remaining == 0) {
+        delete self;
+    }
+    return remaining;
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Slot06(
+    void* /*self_ptr*/,
+    XAsyncBlock* asyncBlock,
+    XAsyncWork* work) {
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] ApiImpl{073B7DCB}::+0x30(async=%p, work=%p)\n",
+                 static_cast<void*>(asyncBlock),
+                 reinterpret_cast<void*>(work));
+    std::fflush(stderr);
+    return XAsyncRun(asyncBlock, work);
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Slot12(
+    void* /*self_ptr*/,
+    uint32_t workDispatchMode,
+    uint32_t completionDispatchMode,
+    XTaskQueueHandle* outQueue) {
+    const XGameResult hr = XTaskQueueCreate(
+        static_cast<XTaskQueueDispatchMode>(workDispatchMode),
+        static_cast<XTaskQueueDispatchMode>(completionDispatchMode),
+        outQueue);
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] ApiImpl{073B7DCB}::+0x60(work=%u, comp=%u) -> 0x%08X (q=%p)\n",
+                 workDispatchMode,
+                 completionDispatchMode,
+                 static_cast<unsigned>(hr),
+                 outQueue ? static_cast<void*>(*outQueue) : nullptr);
+    std::fflush(stderr);
+    return hr;
+}
+
+bool SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Slot16(
+    void* /*self_ptr*/,
+    XTaskQueueHandle queue,
+    uint32_t port,
+    uint32_t timeoutInMs) {
+    return XTaskQueueDispatch(queue, static_cast<XTaskQueuePort>(port), timeoutInMs);
+}
+
+void SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Slot17(
+    void* /*self_ptr*/,
+    XTaskQueueHandle queue) {
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] ApiImpl{073B7DCB}::+0x88(q=%p)\n",
+                 static_cast<void*>(queue));
+    std::fflush(stderr);
+    XTaskQueueCloseHandle(queue);
+}
+
+void SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Slot29(void* /*self_ptr*/) {
+    // Observed no-arg call whose return value is ignored by the caller.
+}
+
+template <uint32_t SlotIndex>
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_UnimplementedSlot(void* /*self_ptr*/) {
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] ApiImpl{073B7DCB}::+0x%X (slot %u) -> E_NOTIMPL\n",
+                 SlotIndex * 8u,
+                 SlotIndex);
+    std::fflush(stderr);
+    return static_cast<XGameResult>(0x80004001u);  // E_NOTIMPL
+}
+
+const XgrApiImpl073B7DCBVtable kApiImpl073B7DCBVtable = {{
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_QueryInterface),        // 0  (+0x00)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_AddRef),                // 1  (+0x08)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_Release),               // 2  (+0x10)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<3>),  // 3  (+0x18)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<4>),  // 4  (+0x20)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<5>),  // 5  (+0x28)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_Slot06),                // 6  (+0x30)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<7>),  // 7  (+0x38)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<8>),  // 8  (+0x40)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<9>),  // 9  (+0x48)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<10>), // 10 (+0x50)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<11>), // 11 (+0x58)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_Slot12),                // 12 (+0x60)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<13>), // 13 (+0x68)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<14>), // 14 (+0x70)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<15>), // 15 (+0x78)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_Slot16),                // 16 (+0x80)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_Slot17),                // 17 (+0x88)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<18>), // 18 (+0x90)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<19>), // 19 (+0x98)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<20>), // 20 (+0xA0)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<21>), // 21 (+0xA8)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<22>), // 22 (+0xB0)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<23>), // 23 (+0xB8)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<24>), // 24 (+0xC0)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<25>), // 25 (+0xC8)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<26>), // 26 (+0xD0)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<27>), // 27 (+0xD8)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<28>), // 28 (+0xE0)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_Slot29),                // 29 (+0xE8)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<30>), // 30 (+0xF0)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<31>), // 31 (+0xF8)
+}};
+
+}  // namespace
+
+extern "C" {
+
 XGameResult QueryApiImpl(const void* api_id, const void* riid, void** out_impl) {
     if (!api_id || !riid || !out_impl) {
         return XGR_E_POINTER;
@@ -1710,11 +1902,26 @@ XGameResult QueryApiImpl(const void* api_id, const void* riid, void** out_impl) 
     char iid_str[64] = {};
     FormatGuid(api_id, api_str, sizeof(api_str));
     FormatGuid(riid, iid_str, sizeof(iid_str));
+
+    if (GuidEquals(api_id, kGuidApiImpl073B7DCB) &&
+        (GuidEquals(riid, kGuidApiImpl073B7DCB) || GuidEquals(riid, kIidIUnknown))) {
+        auto* impl = new (std::nothrow) XgrApiImpl073B7DCB();
+        if (!impl) {
+            return XGR_E_OUTOFMEMORY;
+        }
+        impl->vtbl = &kApiImpl073B7DCBVtable;
+        *out_impl = impl;
+        std::fprintf(stderr,
+                     "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> S_OK (%p)\n",
+                     api_str, iid_str, static_cast<void*>(impl));
+        std::fflush(stderr);
+        return XGR_S_OK;
+    }
+
     std::fprintf(stderr,
                  "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> E_NOINTERFACE\n",
                  api_str, iid_str);
     std::fflush(stderr);
-    // E_NOINTERFACE until specific GDK ApiImpl interface GUIDs are observed at runtime.
     return static_cast<XGameResult>(0x80004002u);
 }
 

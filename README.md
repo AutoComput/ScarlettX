@@ -9,7 +9,7 @@
 
 ![ScarlettX Status](docs/status.svg)
 
-**Status:** `76.4%` (252 of 330 tracked functions) · **Exports:** `240` · **Tests:** `16/16` passing · **Target:** `Xbox Series X|S (Gen9)`
+**Status:** `76.4%` (252 of 330 tracked functions) · **Exports:** `240` · **Tests:** `17/17` passing · **Target:** `Xbox Series X|S (Gen9)`
 
 | Subsystem | Category | Progress | Coverage | Details |
 | :--- | :--- | :---: | :---: | :--- |
@@ -40,7 +40,7 @@ Because Xbox Series X|S executables are native **x86-64 PE32+** binaries targeti
 | Subsystem | Components | Status |
 | :--- | :--- | :--- |
 | **Package & PE64 Loader** | `MicrosoftGame.Config` parser (`XboxGen9`/`Scarlett`), in-process PE64 mapper (`DIR64`/`HIGHLOW` relocations, page protections), named/ordinal IAT & API-set resolution (`api-ms-win-core-synch-l1-2-*`, `rtlsupport`, `psm-appnotify`), dynamic `LoadLibrary` shim redirection, x64 auto-stub thunk generator | Phase 1 updated + tests |
-| **GDK Runtime (`xgameruntime.dll`)** | C ABI for `XGameRuntime*`, `XTaskQueue*`, `XAsync*`, `XUser*`, persistent disk-backed `XGameSave*`, `XSystem*`, `XMem*` hooks & virtual memory, `XThread*`, `XStorage`, plus real-target `InitializeApiImpl`/`InitializeApiImplEx(build, rev, flags)`, `UninitializeApiImpl`, `QueryApiImpl(api_id, riid, out_impl)` diagnostics, and `XErrorReport` | Phase 1 updated + tests |
+| **GDK Runtime (`xgameruntime.dll`)** | C ABI for `XGameRuntime*`, `XTaskQueue*`, `XAsync*`, `XUser*`, persistent disk-backed `XGameSave*`, `XSystem*`, `XMem*` hooks & virtual memory, `XThread*`, `XStorage`, `InitializeApiImpl`/`InitializeApiImplEx`, `UninitializeApiImpl`, `XErrorReport`, plus ScarlettX-owned guest COM vtable for `QueryApiImpl({073B7DCB-1FCF-4030-94BE-E3C9EB623428})` (`+0x00`/`+0x08`/`+0x10`/`+0x30`/`+0x60`/`+0x80`/`+0x88`/`+0xE8`) | Phase 2 updated + tests |
 | **Graphics (`d3d12_xs` / `xg_xs`)** | `d3d12_xs.dll` (`D3D12XboxCreateDevice`, `D3D12XboxSetProcessDebugFlags`, `D3D12SerializeRootSignature`, `D3D12XboxCreateSyntheticDevice`, fail-closed COM boundary for real titles until Xbox `ID3D12Device` vtable wrapper is implemented) + `xg_xs.dll` (`XGCreateTexture2DComputer`, `XGComputeOptimalSwizzleMode`) | Phase 1 cleanup + tests |
 | **Ray Tracing (DXR / BVH)** | Synthetic `d3d12_xs` DXR acceleration-structure prebuild/build/destroy + `XboxBvhBuilder.dll` (synthetic signatures + deterministic software BVH fallback; hardware DXR requires a DXR-capable GPU) | Synthetic scaffold + tests |
 | **DirectStorage & XVD (`dstorage_xs.dll`)** | Renamed to Xbox `dstorage_xs.dll`; async worker-thread I/O queues, file/memory/XVD reads, fence callbacks, status arrays, cancellation by tag, synthetic LZ-RLE test codec, unencrypted XVD container parser + `PackageVfs::MountXvd` | Phase 1 cleanup + tests |
@@ -51,12 +51,13 @@ Because Xbox Series X|S executables are native **x86-64 PE32+** binaries targeti
 | **Networking (`libHttpClient` / `XCurl`)** | `libHttpClient.GDK.dll` (init, mock registry, request setup, async callbacks, offline fallback), `XCurl.dll` (easy handle lifecycle, `curl_easy_setopt`, write callbacks, `curl_easy_getinfo`, slist headers, mock/offline responses) | Synthetic scaffold + tests |
 | **End-to-End Integration** | `scarlett_arena` synthetic Gen9 game booting via in-process PE64 mapper (with isolated guest `atexit` cleanup) and child process across `xgameruntime`, `dstorage_xs`/XVD, `GameInput`, `d3d12_xs` + software BVH RT, `XAudio2`, and `XGameSave` | Synthetic E2E + tests |
 
-### Phase 1 Real-Title Bring-Up (Verified Observations)
+### Real-Title Bring-Up (Verified Observations)
 
 Testing against an unencrypted commercial Xbox Series X|S (`Scarlett`) Unity IL2CPP title (kept strictly outside the repository) established:
 
-- **Static inspection & image mapping:** PE64 image maps with 405 imported symbols and 3 remaining auto-stubs; ScarlettX's `d3d12_xs.dll`, `xg_xs.dll`, and `AcpHal.dll` resolve all static Xbox imports.
-- **Controlled boot trace:** Redirecting `xgameruntime.dll` loads ScarlettX's shim and invokes `InitializeApiImplEx(build=19041, rev=10002, flags=0x0)` followed by `QueryApiImpl(api={073B7DCB-1FCF-4030-94BE-E3C9EB623428}, iid={073B7DCB-1FCF-4030-94BE-E3C9EB623428})`, which currently returns `E_NOINTERFACE` and causes clean exit code `1`.
+- **Phase 1 — Static inspection & image mapping:** PE64 image maps with 405 imported symbols and 3 remaining auto-stubs; ScarlettX's `d3d12_xs.dll`, `xg_xs.dll`, and `AcpHal.dll` resolve all static Xbox imports.
+- **Phase 2 — `QueryApiImpl` COM interface (`{073B7DCB-1FCF-4030-94BE-E3C9EB623428}`):** Reverse-engineered the target's Windows x64 register ABI (`RCX=api_id`, `RDX=riid`, `R8=out_impl`) and vtable offsets (`+0x00`/`+0x08`/`+0x10`, `+0x30`, `+0x60`, `+0x80`, `+0x88`, `+0xE8`) without asserting an unverified official interface name. Implemented a ScarlettX-owned 32-slot guest COM object in `xgameruntime.dll` with dedicated ABI tests (`test_query_api_impl`).
+- **Controlled startup trace (Phase 2):** Redirecting `xgameruntime.dll` enters ScarlettX's shim and executes `InitializeApiImplEx(build=19041, rev=10002, flags=0x0)` → `S_OK`, repeated `QueryApiImpl({073B7DCB-1FCF-4030-94BE-E3C9EB623428})` → `S_OK`, `+0x60(work=0, comp=0)` → `S_OK` (allocates queue handle), `+0x88(q)` on teardown, and loads `GameAssembly.dll`, `d3d12_xs.dll`, `xg_xs.dll`, `AcpHal.dll`, `GameInput.dll`, `xaudio2_9.dll`, and `D3D12Core.dll`. A second unresolved GUID `{37E56907-2F10-41E8-B72F-36EDB185331A}` returns `E_NOINTERFACE`, and the process still exits via `NtTerminateProcess` with code `1` (observed FMOD validation path in backtrace; root cause under investigation).
 - **Current classification:** **Static inspection + image mapping + early startup trace** (not yet partial boot or gameplay).
 
 ### Current Limitations
