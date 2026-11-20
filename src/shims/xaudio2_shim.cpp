@@ -15,6 +15,9 @@
 #include <windows.h>
 #endif
 
+// xaudio2_guest.cpp
+extern "C" int32_t ScarlettXGuestXAudio2Create(void** out, uint32_t flags, uint32_t processor);
+
 namespace {
 
 constexpr int32_t kS_OK = 0;
@@ -561,39 +564,8 @@ int32_t Xma2DecodePacket(
 }
 
 int32_t XAudio2Create(void** ppXAudio2, uint32_t flags, uint32_t xaudio2_processor) {
-    if (!ppXAudio2) return kE_INVALIDARG;
-    *ppXAudio2 = nullptr;
-    const char* real_title = std::getenv("SCARLETTX_REAL_TITLE");
-    const char* allow_host = std::getenv("SCARLETTX_ALLOW_HOST_XAUDIO2");
-    if (real_title && real_title[0] == '1' && !(allow_host && allow_host[0] == '1')) {
-        std::fprintf(stderr,
-                     "[ScarlettX][xaudio2_9] XAudio2Create(flags=0x%X, proc=0x%X) -> E_NOTIMPL "
-                     "(Xbox IXAudio2 COM wrapper not yet implemented; refusing raw host COM pointer)\n",
-                     flags, xaudio2_processor);
-        return kE_NOTIMPL;
-    }
-#if defined(_WIN32)
-    static HMODULE sys_xaudio = []() -> HMODULE {
-        wchar_t sys_dir[MAX_PATH] = {};
-        if (GetSystemDirectoryW(sys_dir, MAX_PATH) == 0) return nullptr;
-        std::wstring path = std::wstring(sys_dir) + L"\\XAudio2_9.dll";
-        return LoadLibraryW(path.c_str());
-    }();
-    if (sys_xaudio) {
-        using Fn = HRESULT(WINAPI*)(void**, uint32_t, uint32_t);
-        auto fn = reinterpret_cast<Fn>(GetProcAddress(sys_xaudio, MAKEINTRESOURCEA(1)));
-        if (fn) {
-            const HRESULT hr = fn(ppXAudio2, flags, xaudio2_processor);
-            std::fprintf(stderr,
-                         "[ScarlettX][xaudio2_9] XAudio2Create(flags=0x%X, proc=0x%X) -> hr=0x%08lX ptr=%p\n",
-                         flags, xaudio2_processor, static_cast<unsigned long>(hr), *ppXAudio2);
-            return static_cast<int32_t>(hr);
-        }
-    }
-#endif
-    (void)flags;
-    (void)xaudio2_processor;
-    return kE_NOTIMPL;
+    // Always guest-facing objects, never the host COM pointer.
+    return ScarlettXGuestXAudio2Create(ppXAudio2, flags, xaudio2_processor);
 }
 
 }  // extern "C"

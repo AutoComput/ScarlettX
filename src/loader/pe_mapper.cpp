@@ -1,5 +1,7 @@
 #include "scarlettx/loader/pe_mapper.h"
 
+#include "guest_modules.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -16,6 +18,15 @@
 namespace scarlettx {
 
 namespace {
+
+#if defined(_WIN32)
+// Host-process registrations made for a mapped image; undone in Unmap().
+struct LoaderState {
+    guest::TlsBinding tls;
+    PRUNTIME_FUNCTION function_table = nullptr;
+    uint8_t* registered_base = nullptr;
+};
+#endif
 
 std::string ToLowerAscii(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
@@ -125,25 +136,43 @@ HMODULE TryLoadGuestShimA(const char* name) {
     const auto candidate = std::filesystem::path(shim_dir) / base;
     if (std::filesystem::exists(candidate)) {
         HMODULE mod = LoadLibraryA(candidate.string().c_str());
-        std::fprintf(stderr, "[ScarlettX][loader] Redirected dynamic load '%s' -> '%s' (handle=%p)\n",
-                     name, candidate.string().c_str(), static_cast<void*>(mod));
+        const DWORD error = mod ? 0 : GetLastError();
+        if (mod) {
+            std::fprintf(stderr, "[ScarlettX][loader] Redirected dynamic load '%s' -> '%s' (handle=%p)\n",
+                         name, candidate.string().c_str(), static_cast<void*>(mod));
+        } else {
+            std::fprintf(stderr, "[ScarlettX][loader] Redirected dynamic load '%s' -> '%s' FAILED (error %lu)\n",
+                         name, candidate.string().c_str(), error);
+            SetLastError(error);
+        }
         return mod;
     }
     return nullptr;
+}
+
+// A title DLL loaded by the host loader still has to see the guest image when
+// it asks which module it runs in.
+HMODULE AdoptHostModule(HMODULE mod) {
+    if (mod) {
+        const DWORD saved_error = GetLastError();
+        guest::PatchHostModuleForGuests(mod);
+        SetLastError(saved_error);
+    }
+    return mod;
 }
 
 HMODULE WINAPI GuestLoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
     if (HMODULE mod = TryLoadGuestShimA(lpLibFileName)) {
         return mod;
     }
-    return LoadLibraryExA(lpLibFileName, hFile, dwFlags);
+    return AdoptHostModule(LoadLibraryExA(lpLibFileName, hFile, dwFlags));
 }
 
 HMODULE WINAPI GuestLoadLibraryA(LPCSTR lpLibFileName) {
     if (HMODULE mod = TryLoadGuestShimA(lpLibFileName)) {
         return mod;
     }
-    return LoadLibraryA(lpLibFileName);
+    return AdoptHostModule(LoadLibraryA(lpLibFileName));
 }
 
 HMODULE WINAPI GuestLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
@@ -156,7 +185,7 @@ HMODULE WINAPI GuestLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dw
             return mod;
         }
     }
-    return LoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    return AdoptHostModule(LoadLibraryExW(lpLibFileName, hFile, dwFlags));
 }
 
 HMODULE WINAPI GuestLoadLibraryW(LPCWSTR lpLibFileName) {
@@ -252,6 +281,17 @@ void MappedPeImage::Unmap() {
         auto fn = reinterpret_cast<DllMainFn>(mapped_base_ + entry_point_rva_);
         fn(reinterpret_cast<HINSTANCE>(mapped_base_), DLL_PROCESS_DETACH, nullptr);
         dll_attached_ = false;
+    }
+    if (auto* state = static_cast<LoaderState*>(loader_state_)) {
+        if (state->registered_base) {
+            guest::UnregisterModule(state->registered_base);
+        }
+        if (state->function_table) {
+            RtlDeleteFunctionTable(state->function_table);
+        }
+        guest::DetachTls(&state->tls);
+        delete state;
+        loader_state_ = nullptr;
     }
     for (void* mod : loaded_modules_) {
         if (mod) {
@@ -526,6 +566,15 @@ Status MappedPeImage::MapFile(const std::string& pe_path,
                         }
                     }
 
+                    // (a.6) Module queries the OS loader cannot answer for a mapped image.
+                    if (!resolved && !by_ordinal) {
+                        if (void* replacement =
+                                guest::LookupImportOverride(ToLowerAscii(target_dll), sym_name)) {
+                            resolved = replacement;
+                            res.kind = ImportResolutionKind::HleRegistry;
+                        }
+                    }
+
                     // (b) Check host / HLE shim DLL via LoadLibrary + GetProcAddress.
                     if (!resolved) {
                         HMODULE mod = load_target_module(target_dll, is_hle);
@@ -569,6 +618,40 @@ Status MappedPeImage::MapFile(const std::string& pe_path,
         }
     }
 
+    // 4.5 Host-process registrations: implicit TLS (while the index variable is
+    //     still writable), unwind tables, and the guest module registry.
+    {
+        auto* state = new LoaderState();
+        loader_state_ = state;
+        const auto& dirs = nt->OptionalHeader.DataDirectory;
+        const DWORD dir_count = nt->OptionalHeader.NumberOfRvaAndSizes;
+        if (dir_count > IMAGE_DIRECTORY_ENTRY_TLS && dirs[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress != 0) {
+            Status tls_st = guest::AttachTls(
+                mapped_base_, mapped_base_ + dirs[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress,
+                !is_dll_, &state->tls);
+            if (!tls_st.ok()) {
+                Unmap();
+                return tls_st;
+            }
+        }
+        if (dir_count > IMAGE_DIRECTORY_ENTRY_EXCEPTION &&
+            dirs[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress != 0) {
+            auto* table = reinterpret_cast<PRUNTIME_FUNCTION>(
+                mapped_base_ + dirs[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress);
+            const DWORD count = dirs[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size / sizeof(RUNTIME_FUNCTION);
+            if (count != 0 &&
+                RtlAddFunctionTable(table, count, reinterpret_cast<DWORD64>(mapped_base_))) {
+                state->function_table = table;
+            }
+        }
+        guest::RegisterModule(mapped_base_, size_of_image_,
+                              std::filesystem::absolute(pe_path).string(), !is_dll_);
+        state->registered_base = mapped_base_;
+        for (void* mod : loaded_modules_) {
+            guest::PatchHostModuleForGuests(mod);
+        }
+    }
+
     // 5. Apply per-section memory protections and flush instruction cache.
     DWORD old_prot = 0;
     VirtualProtect(mapped_base_, nt->OptionalHeader.SizeOfHeaders, PAGE_READONLY, &old_prot);
@@ -596,6 +679,9 @@ Status MappedPeImage::MapFile(const std::string& pe_path,
                     (*cb)(mapped_base_, DLL_PROCESS_ATTACH, nullptr);
                     ++cb;
                 }
+            }
+            if (auto* state = static_cast<LoaderState*>(loader_state_)) {
+                guest::EnableTlsCallbacks(&state->tls);
             }
         }
     }

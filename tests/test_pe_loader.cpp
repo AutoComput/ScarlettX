@@ -1,5 +1,5 @@
 #include <algorithm>
-#include <cassert>
+#include "sx_check.h"
 #include <cctype>
 #include <filesystem>
 #include <iostream>
@@ -21,14 +21,14 @@ int main() {
     scarlettx::DllRedirectionTable redirects;
     const std::filesystem::path rt_exe =
         std::filesystem::path(SCARLETTX_BINARY_DIR) / "packages" / "rt_showcase" / "rt_showcase.exe";
-    assert(std::filesystem::exists(rt_exe));
+    SX_REQUIRE(std::filesystem::exists(rt_exe));
 
     scarlettx::PeImageInfo info;
     auto st = scarlettx::InspectPeFile(rt_exe.string(), redirects, info);
-    assert(st.ok());
-    assert(info.is_pe64);
-    assert(!info.sections.empty());
-    assert(!info.imports.empty());
+    SX_REQUIRE(st.ok());
+    SX_REQUIRE(info.is_pe64);
+    SX_REQUIRE(!info.sections.empty());
+    SX_REQUIRE(!info.imports.empty());
 
     bool found_d3d12_xs = false;
     bool found_xgr = false;
@@ -37,20 +37,20 @@ int main() {
         const std::string name = ToLower(mod.dll_name);
         if (name == "d3d12_xs.dll") {
             found_d3d12_xs = true;
-            assert(mod.is_scarlett_hle);
-            assert(!mod.symbols.empty());
+            SX_REQUIRE(mod.is_scarlett_hle);
+            SX_REQUIRE(!mod.symbols.empty());
         } else if (name == "xgameruntime.dll") {
             found_xgr = true;
-            assert(mod.is_scarlett_hle);
+            SX_REQUIRE(mod.is_scarlett_hle);
         } else if (name == "xboxbvhbuilder.dll") {
             found_bvh = true;
-            assert(mod.is_scarlett_hle);
+            SX_REQUIRE(mod.is_scarlett_hle);
         }
     }
 
-    assert(found_d3d12_xs);
-    assert(found_xgr);
-    assert(found_bvh);
+    SX_REQUIRE(found_d3d12_xs);
+    SX_REQUIRE(found_xgr);
+    SX_REQUIRE(found_bvh);
 
     std::cout << "[test_pe_loader] PASSED (imports=" << info.imports.size() << ")\n";
     return 0;

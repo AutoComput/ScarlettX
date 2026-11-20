@@ -30,6 +30,9 @@ constexpr XGameResult XGR_E_ABORT = static_cast<XGameResult>(0x80004004u);
 constexpr XGameResult XGR_E_PENDING = static_cast<XGameResult>(0x8000000Au);
 constexpr XGameResult XGR_E_NOT_SUFFICIENT_BUFFER = static_cast<XGameResult>(0x8007007Au);
 constexpr XGameResult XGR_E_NOTFOUND = static_cast<XGameResult>(0x80070490u);
+constexpr XGameResult XGR_E_UNEXPECTED = static_cast<XGameResult>(0x8000FFFFu);
+constexpr XGameResult XGR_E_NOT_SUPPORTED = static_cast<XGameResult>(0x80070032u);
+constexpr XGameResult XGR_E_NO_TASK_QUEUE = static_cast<XGameResult>(0x800701ABu);
 constexpr XGameResult XGR_E_GAMERUNTIME_NOT_INITIALIZED = static_cast<XGameResult>(0x89240100u);
 constexpr XGameResult XGR_E_GS_USER_NOT_REGISTERED = static_cast<XGameResult>(0x80830001u);
 constexpr XGameResult XGR_E_GS_CONTAINER_NOT_IN_SYNC = static_cast<XGameResult>(0x80830002u);
@@ -73,10 +76,13 @@ enum XTaskQueuePort : uint32_t {
     XTaskQueuePort_Completion = 1,
 };
 
+typedef struct XTaskQueuePortObject* XTaskQueuePortHandle;
+
+// Values match the public XTaskQueue.h; guests pass them as raw integers.
 enum XTaskQueueDispatchMode : uint32_t {
-    XTaskQueueDispatchMode_ThreadPool = 0,
-    XTaskQueueDispatchMode_SerializedThreadPool = 1,
-    XTaskQueueDispatchMode_Manual = 2,
+    XTaskQueueDispatchMode_Manual = 0,
+    XTaskQueueDispatchMode_ThreadPool = 1,
+    XTaskQueueDispatchMode_SerializedThreadPool = 2,
     XTaskQueueDispatchMode_Immediate = 3,
 };
 
@@ -95,6 +101,14 @@ SCARLETTX_XGR_API XGameResult XTaskQueueCreate(
     XTaskQueueDispatchMode workDispatchMode,
     XTaskQueueDispatchMode completionDispatchMode,
     XTaskQueueHandle* queue);
+SCARLETTX_XGR_API XGameResult XTaskQueueCreateComposite(
+    XTaskQueuePortHandle workPort,
+    XTaskQueuePortHandle completionPort,
+    XTaskQueueHandle* queue);
+SCARLETTX_XGR_API XGameResult XTaskQueueGetPort(
+    XTaskQueueHandle queue,
+    XTaskQueuePort port,
+    XTaskQueuePortHandle* portHandle);
 SCARLETTX_XGR_API XGameResult XTaskQueueDuplicateHandle(
     XTaskQueueHandle queueHandle,
     XTaskQueueHandle* duplicatedHandle);
@@ -119,7 +133,9 @@ SCARLETTX_XGR_API XGameResult XTaskQueueTerminate(
     bool wait,
     void* callbackContext,
     XTaskQueueTerminatedCallback* callback);
-SCARLETTX_XGR_API XGameResult XTaskQueueGetCurrentProcessTaskQueue(
+// Returns false (and a null handle) when the process queue was set to null.
+// On success the caller owns the returned handle and must close it.
+SCARLETTX_XGR_API bool XTaskQueueGetCurrentProcessTaskQueue(
     XTaskQueueHandle* queue);
 SCARLETTX_XGR_API void XTaskQueueSetCurrentProcessTaskQueue(
     XTaskQueueHandle queue);
@@ -129,6 +145,18 @@ SCARLETTX_XGR_API XGameResult XTaskQueueRegisterMonitor(
     XTaskQueueMonitorCallback* callback,
     XTaskQueueRegistrationToken* token);
 SCARLETTX_XGR_API void XTaskQueueUnregisterMonitor(
+    XTaskQueueHandle queue,
+    XTaskQueueRegistrationToken token);
+// waitHandle is a Win32 waitable HANDLE. The callback is submitted to the port
+// each time the handle is signaled, until the waiter is unregistered.
+SCARLETTX_XGR_API XGameResult XTaskQueueRegisterWaiter(
+    XTaskQueueHandle queue,
+    XTaskQueuePort port,
+    void* waitHandle,
+    void* callbackContext,
+    XTaskQueueCallback* callback,
+    XTaskQueueRegistrationToken* token);
+SCARLETTX_XGR_API void XTaskQueueUnregisterWaiter(
     XTaskQueueHandle queue,
     XTaskQueueRegistrationToken token);
 
@@ -150,6 +178,46 @@ SCARLETTX_XGR_API XGameResult XAsyncGetStatus(XAsyncBlock* asyncBlock, bool wait
 SCARLETTX_XGR_API XGameResult XAsyncGetResultSize(XAsyncBlock* asyncBlock, size_t* bufferSize);
 SCARLETTX_XGR_API void XAsyncCancel(XAsyncBlock* asyncBlock);
 SCARLETTX_XGR_API XGameResult XAsyncRun(XAsyncBlock* asyncBlock, XAsyncWork* work);
+
+// ---------------------------------------------------------------------------
+// XAsyncProvider.h
+// ---------------------------------------------------------------------------
+enum XAsyncOp : uint32_t {
+    XAsyncOp_Begin = 0,
+    XAsyncOp_DoWork = 1,
+    XAsyncOp_GetResult = 2,
+    XAsyncOp_Cancel = 3,
+    XAsyncOp_Cleanup = 4,
+};
+
+struct XAsyncProviderData {
+    XAsyncBlock* async;
+    size_t bufferSize;
+    void* buffer;
+    void* context;
+};
+
+typedef XGameResult(SCARLETTX_GDK_CALLBACK XAsyncProvider)(
+    XAsyncOp op,
+    const XAsyncProviderData* data);
+
+SCARLETTX_XGR_API XGameResult XAsyncBegin(
+    XAsyncBlock* asyncBlock,
+    void* context,
+    const void* identity,
+    const char* identityName,
+    XAsyncProvider* provider);
+SCARLETTX_XGR_API XGameResult XAsyncSchedule(XAsyncBlock* asyncBlock, uint32_t delayInMs);
+SCARLETTX_XGR_API void XAsyncComplete(
+    XAsyncBlock* asyncBlock,
+    XGameResult result,
+    size_t requiredBufferSize);
+SCARLETTX_XGR_API XGameResult XAsyncGetResult(
+    XAsyncBlock* asyncBlock,
+    const void* identity,
+    size_t bufferSize,
+    void* buffer,
+    size_t* bufferUsed);
 
 // ---------------------------------------------------------------------------
 // XSystem.h

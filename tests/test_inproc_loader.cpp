@@ -1,14 +1,19 @@
 #include <algorithm>
-#include <cassert>
+#include "sx_check.h"
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include "scarlettx/loader/pe_loader.h"
 #include "scarlettx/loader/pe_mapper.h"
 #include "scarlettx/runtime/emulator.h"
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -29,19 +34,19 @@ int main() {
     const std::filesystem::path probe_dir =
         std::filesystem::path(SCARLETTX_BINARY_DIR) / "packages" / "iat_probe";
     const std::filesystem::path probe_dll = probe_dir / "iat_probe.dll";
-    assert(std::filesystem::exists(probe_dll));
+    SX_REQUIRE(std::filesystem::exists(probe_dll));
 
     // 1. Verify API-set resolution helper.
-    assert(scarlettx::ResolveApiSetDll("api-ms-win-crt-runtime-l1-1-0.dll") == "ucrtbase.dll");
-    assert(scarlettx::ResolveApiSetDll("api-ms-win-core-processthreads-l1-1-0.dll") ==
+    SX_REQUIRE(scarlettx::ResolveApiSetDll("api-ms-win-crt-runtime-l1-1-0.dll") == "ucrtbase.dll");
+    SX_REQUIRE(scarlettx::ResolveApiSetDll("api-ms-win-core-processthreads-l1-1-0.dll") ==
            "kernel32.dll");
-    assert(scarlettx::ResolveApiSetDll("api-ms-win-core-com-l1-1-0.dll") == "combase.dll");
+    SX_REQUIRE(scarlettx::ResolveApiSetDll("api-ms-win-core-com-l1-1-0.dll") == "combase.dll");
 
     // 2. Verify static PE inspection sees both named and ordinal imports.
     scarlettx::DllRedirectionTable redirects;
     scarlettx::PeImageInfo info;
-    assert(scarlettx::InspectPeFile(probe_dll.string(), redirects, info).ok());
-    assert(info.is_pe64);
+    SX_REQUIRE(scarlettx::InspectPeFile(probe_dll.string(), redirects, info).ok());
+    SX_REQUIRE(info.is_pe64);
 
     bool saw_ord7 = false;
     bool saw_ord42 = false;
@@ -65,10 +70,10 @@ int main() {
             saw_xgr = true;
         }
     }
-    assert(saw_ord7);
-    assert(saw_ord42);
-    assert(saw_overlay_named);
-    assert(saw_xgr);
+    SX_REQUIRE(saw_ord7);
+    SX_REQUIRE(saw_ord42);
+    SX_REQUIRE(saw_overlay_named);
+    SX_REQUIRE(saw_xgr);
 
     // 3. Map in-process with forced relocation, HLE ordinal override, and auto-stub thunks.
     scarlettx::HleSymbolRegistry hle_reg;
@@ -87,9 +92,9 @@ int main() {
         return 1;
     }
 
-    assert(mapped.IsMapped());
-    assert(mapped.WasRelocated());
-    assert(mapped.RelocationsApplied() > 0);
+    SX_REQUIRE(mapped.IsMapped());
+    SX_REQUIRE(mapped.WasRelocated());
+    SX_REQUIRE(mapped.RelocationsApplied() > 0);
 
     // Verify resolution kinds.
     bool resolved_hle_ord = false;
@@ -99,47 +104,87 @@ int main() {
     for (const auto& r : mapped.Resolutions()) {
         const std::string dll = ToLower(r.dll_name);
         if (dll == "xordinal_hle.dll" && r.by_ordinal && r.ordinal == 7) {
-            assert(r.kind == scarlettx::ImportResolutionKind::HleRegistry);
+            SX_REQUIRE(r.kind == scarlettx::ImportResolutionKind::HleRegistry);
             resolved_hle_ord = true;
         } else if (dll == "xgameruntime.dll" && r.symbol_name == "XGameRuntimeInitialize") {
-            assert(r.kind == scarlettx::ImportResolutionKind::HostDll);
+            SX_REQUIRE(r.kind == scarlettx::ImportResolutionKind::HostDll);
             resolved_host_xgr = true;
         } else if (dll == "xgameoverlay_missing.dll" && r.symbol_name == "XOverlayShowNotice") {
-            assert(r.kind == scarlettx::ImportResolutionKind::StubThunk);
+            SX_REQUIRE(r.kind == scarlettx::ImportResolutionKind::StubThunk);
             resolved_stub_named = true;
         } else if (dll == "xtelemetry_missing.dll" && r.by_ordinal && r.ordinal == 42) {
-            assert(r.kind == scarlettx::ImportResolutionKind::StubThunk);
+            SX_REQUIRE(r.kind == scarlettx::ImportResolutionKind::StubThunk);
             resolved_stub_ord = true;
         }
     }
-    assert(resolved_hle_ord);
-    assert(resolved_host_xgr);
-    assert(resolved_stub_named);
-    assert(resolved_stub_ord);
+    SX_REQUIRE(resolved_hle_ord);
+    SX_REQUIRE(resolved_host_xgr);
+    SX_REQUIRE(resolved_stub_named);
+    SX_REQUIRE(resolved_stub_ord);
 
     // 4. Execute relocated global pointer probe.
     using ProbeRelocFn = uint64_t (*)();
     auto probe_reloc = reinterpret_cast<ProbeRelocFn>(mapped.GetExportAddress("ProbeRelocatedGlobal"));
-    assert(probe_reloc != nullptr);
-    assert(probe_reloc() == 0x5CA81E7700001234ull);
+    SX_REQUIRE(probe_reloc != nullptr);
+    SX_REQUIRE(probe_reloc() == 0x5CA81E7700001234ull);
+
+    // 4.5 The mapped image is known to the host unwinder: without this a C++
+    //     exception thrown in guest code terminates the process.
+    {
+        // Leaf functions and linker thunks have no unwind entry, so take the
+        // address of a function the image's own table describes.
+        const auto* image = reinterpret_cast<const uint8_t*>(mapped.MappedBase());
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+            image + reinterpret_cast<const IMAGE_DOS_HEADER*>(image)->e_lfanew);
+        const auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+        SX_REQUIRE(dir.VirtualAddress != 0 && dir.Size >= sizeof(RUNTIME_FUNCTION));
+        const auto* first = reinterpret_cast<const RUNTIME_FUNCTION*>(image + dir.VirtualAddress);
+        DWORD64 unwind_base = 0;
+        const DWORD64 pc = mapped.MappedBase() + first->BeginAddress;
+        SX_REQUIRE(RtlLookupFunctionEntry(pc, &unwind_base, nullptr) != nullptr);
+        SX_REQUIRE(unwind_base == mapped.MappedBase());
+    }
+
+    // 4.6 Guest C++ exceptions and guest thread-local storage.
+    {
+        using ProbeThrowFn = int (*)(int);
+        using ProbeTlsFn = int (*)();
+        auto probe_throw = reinterpret_cast<ProbeThrowFn>(mapped.GetExportAddress("ProbeThrowCatch"));
+        auto probe_tls = reinterpret_cast<ProbeTlsFn>(mapped.GetExportAddress("ProbeThreadLocalCounter"));
+        SX_REQUIRE(probe_throw != nullptr && probe_tls != nullptr);
+        for (int i = 0; i < 100; ++i) {
+            SX_REQUIRE(probe_throw(i) == i + 1);
+        }
+        SX_REQUIRE(probe_tls() == 42);
+        SX_REQUIRE(probe_tls() == 43);
+        int on_thread_first = 0;
+        int on_thread_second = 0;
+        std::thread worker([&] {
+            on_thread_first = probe_tls();
+            on_thread_second = probe_tls();
+        });
+        worker.join();
+        SX_REQUIRE(on_thread_first == 42 && on_thread_second == 43);
+        SX_REQUIRE(probe_tls() == 44);
+    }
 
     // 5. Execute ordinal-imported HLE handler probe.
     using ProbeOrdFn = uint64_t (*)(uint64_t, uint64_t);
     auto probe_ord = reinterpret_cast<ProbeOrdFn>(mapped.GetExportAddress("ProbeOrdinalHle"));
-    assert(probe_ord != nullptr);
-    assert(probe_ord(42, 99) == 42106ull);
+    SX_REQUIRE(probe_ord != nullptr);
+    SX_REQUIRE(probe_ord(42, 99) == 42106ull);
 
     // 6. Execute auto-stubbed named and ordinal imports and verify captured args + return values.
     auto probe_named_stub =
         reinterpret_cast<ProbeRelocFn>(mapped.GetExportAddress("ProbeMissingNamedStub"));
     auto probe_ord_stub =
         reinterpret_cast<ProbeRelocFn>(mapped.GetExportAddress("ProbeMissingOrdinalStub"));
-    assert(probe_named_stub != nullptr);
-    assert(probe_ord_stub != nullptr);
+    SX_REQUIRE(probe_named_stub != nullptr);
+    SX_REQUIRE(probe_ord_stub != nullptr);
 
-    assert(probe_named_stub() == 0x55AA1234ull);
-    assert(probe_ord_stub() == 0x55AA1234ull);
-    assert(mapped.Stubs().TotalHitCount() == 2);
+    SX_REQUIRE(probe_named_stub() == 0x55AA1234ull);
+    SX_REQUIRE(probe_ord_stub() == 0x55AA1234ull);
+    SX_REQUIRE(mapped.Stubs().TotalHitCount() == 2);
 
     const auto records = mapped.Stubs().SnapshotRecords();
     bool checked_named_args = false;
@@ -147,23 +192,23 @@ int main() {
     for (const auto& rec : records) {
         const std::string dll = ToLower(rec.dll_name);
         if (dll == "xgameoverlay_missing.dll" && rec.symbol_name == "XOverlayShowNotice") {
-            assert(rec.hit_count == 1);
-            assert(rec.last_args[0] == 0x1111ull);
-            assert(rec.last_args[1] == 0x2222ull);
-            assert(rec.last_args[2] == 0x3333ull);
-            assert(rec.last_args[3] == 0x4444ull);
+            SX_REQUIRE(rec.hit_count == 1);
+            SX_REQUIRE(rec.last_args[0] == 0x1111ull);
+            SX_REQUIRE(rec.last_args[1] == 0x2222ull);
+            SX_REQUIRE(rec.last_args[2] == 0x3333ull);
+            SX_REQUIRE(rec.last_args[3] == 0x4444ull);
             checked_named_args = true;
         } else if (dll == "xtelemetry_missing.dll" && rec.by_ordinal && rec.ordinal == 42) {
-            assert(rec.hit_count == 1);
-            assert(rec.last_args[0] == 0xAAAAull);
-            assert(rec.last_args[1] == 0xBBBBull);
-            assert(rec.last_args[2] == 0xCCCCull);
-            assert(rec.last_args[3] == 0xDDDDull);
+            SX_REQUIRE(rec.hit_count == 1);
+            SX_REQUIRE(rec.last_args[0] == 0xAAAAull);
+            SX_REQUIRE(rec.last_args[1] == 0xBBBBull);
+            SX_REQUIRE(rec.last_args[2] == 0xCCCCull);
+            SX_REQUIRE(rec.last_args[3] == 0xDDDDull);
             checked_ord_args = true;
         }
     }
-    assert(checked_named_args);
-    assert(checked_ord_args);
+    SX_REQUIRE(checked_named_args);
+    SX_REQUIRE(checked_ord_args);
 
     // 7. Verify Emulator::BootPackage with in_process=true runs ScarlettGuestMain cleanly.
     scarlettx::EmulatorConfig cfg;

@@ -177,7 +177,7 @@ int main() {
 
     // Process default queue
     XTaskQueueHandle proc_q = nullptr;
-    CHECK(XTaskQueueGetCurrentProcessTaskQueue(&proc_q) == XGR_S_OK && proc_q != nullptr);
+    CHECK(XTaskQueueGetCurrentProcessTaskQueue(&proc_q) == true && proc_q != nullptr);
     XTaskQueueCloseHandle(proc_q);
 
     // 4. XAsyncRun on ThreadPool queue

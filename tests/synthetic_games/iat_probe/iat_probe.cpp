@@ -29,6 +29,35 @@ __declspec(dllexport) uint64_t ProbeRelocatedGlobal() {
     return *kRelocMagicPtr;
 }
 
+// Unwinds a C++ exception through a guest frame; needs the image's unwind
+// tables registered with the host. The helper has C++ linkage because MSVC
+// assumes extern "C" functions never throw and drops the handler.
+extern "C++" {
+#if defined(_MSC_VER)
+__declspec(noinline)
+#else
+__attribute__((noinline))
+#endif
+void ProbeThrowHelper(int value) {
+    throw value;
+}
+}
+
+__declspec(dllexport) int ProbeThrowCatch(int value) {
+    try {
+        ProbeThrowHelper(value);
+    } catch (int caught) {
+        return caught + 1;
+    }
+    return -1;
+}
+
+// Per-thread storage of the guest image (implicit TLS on MSVC guests).
+__declspec(dllexport) int ProbeThreadLocalCounter() {
+    static thread_local int counter = 41;
+    return ++counter;
+}
+
 __declspec(dllexport) uint64_t ProbeOrdinalHle(uint64_t a, uint64_t b) {
     return XOrdinalCompute(a, b);
 }

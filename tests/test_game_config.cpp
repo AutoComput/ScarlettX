@@ -1,4 +1,4 @@
-#include <cassert>
+#include "sx_check.h"
 #include <iostream>
 
 #include "scarlettx/loader/game_config.h"
@@ -18,12 +18,12 @@ int main() {
 
     scarlettx::GameConfig cfg;
     auto st = scarlettx::ParseGameConfigXml(scarlett_xml, cfg);
-    assert(st.ok());
-    assert(cfg.IsNativeScarlett());
-    assert(cfg.title_id == "74B7FFFC");
-    assert(cfg.identity_name == "TestStudio.ScarlettGame");
-    assert(cfg.PrimaryExecutable() != nullptr);
-    assert(cfg.PrimaryExecutable()->name == "Game.exe");
+    SX_REQUIRE(st.ok());
+    SX_REQUIRE(cfg.IsNativeScarlett());
+    SX_REQUIRE(cfg.title_id == "74B7FFFC");
+    SX_REQUIRE(cfg.identity_name == "TestStudio.ScarlettGame");
+    SX_REQUIRE(cfg.PrimaryExecutable() != nullptr);
+    SX_REQUIRE(cfg.PrimaryExecutable()->name == "Game.exe");
 
     const std::string gen9_aware_xml = R"(
 <Game configVersion="0">
@@ -35,13 +35,13 @@ int main() {
 )";
     scarlettx::GameConfig old_cfg;
     st = scarlettx::ParseGameConfigXml(gen9_aware_xml, old_cfg);
-    assert(st.ok());
-    assert(!old_cfg.IsNativeScarlett());
-    assert(old_cfg.console_target == scarlettx::ConsoleTarget::XboxOneGen9Aware);
+    SX_REQUIRE(st.ok());
+    SX_REQUIRE(!old_cfg.IsNativeScarlett());
+    SX_REQUIRE(old_cfg.console_target == scarlettx::ConsoleTarget::XboxOneGen9Aware);
 
     scarlettx::GameConfig bad_cfg;
     st = scarlettx::ParseGameConfigXml("<NotAGame/>", bad_cfg);
-    assert(!st.ok());
+    SX_REQUIRE(!st.ok());
 
     std::cout << "[test_game_config] PASSED\n";
     return 0;

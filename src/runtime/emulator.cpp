@@ -5,6 +5,7 @@
 #include <iostream>
 
 #include "scarlettx/loader/pe_mapper.h"
+#include "scarlettx/runtime/virtual_drive.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -97,29 +98,22 @@ Status Emulator::BootPackage(const std::string& package_dir) {
 
     set_env("SCARLETTX_HEADLESS", config_.headless ? "1" : "0");
     set_env("SCARLETTX_PREFER_WARP", config_.prefer_warp ? "1" : "0");
+    set_env("SCARLETTX_TRACE", config_.trace ? "1" : "0");
+    set_env("SCARLETTX_STATS", config_.stats ? "1" : "0");
+    set_env("SCARLETTX_STATS", config_.stats ? "1" : "0");
     if (!report.config.title_id.empty()) {
         set_env("SCARLETTX_TITLE_ID", report.config.title_id.c_str());
     }
     const std::string abs_pkg_dir = std::filesystem::absolute(package_dir).string();
     set_env("SCARLETTX_PACKAGE_ROOT", abs_pkg_dir.c_str());
 
-    // Map virtual G: drive to package root if G: is not already assigned on the host.
     // Real Xbox Series X|S titles (e.g. Unity Game Core nativePlugins.txt) reference G:/.
+    // The mapping is skipped when G: is already assigned on the host.
     struct VirtualDriveGuard {
-        bool mapped = false;
-        std::string target;
-        ~VirtualDriveGuard() {
-            if (mapped) {
-                DefineDosDeviceA(DDD_REMOVE_DEFINITION, "G:", target.c_str());
-            }
-        }
+        ~VirtualDriveGuard() { vfs::UnmapPackageDrive(); }
     } g_drive_guard;
-    if ((GetLogicalDrives() & (1u << ('G' - 'A'))) == 0) {
-        if (DefineDosDeviceA(0, "G:", abs_pkg_dir.c_str())) {
-            g_drive_guard.mapped = true;
-            g_drive_guard.target = abs_pkg_dir;
-            std::cout << "[ScarlettX][vfs] Mapped virtual G:\\ -> " << abs_pkg_dir << "\n";
-        }
+    if (vfs::MapPackageDrive('G', abs_pkg_dir)) {
+        std::cout << "[ScarlettX][vfs] Mapped virtual G:\\ -> " << abs_pkg_dir << "\n";
     }
 
     if (config_.max_frames > 0) {

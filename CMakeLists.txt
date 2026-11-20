@@ -13,6 +13,7 @@ add_library(scarlettx_core STATIC
     src/loader/game_config.cpp
     src/loader/pe_loader.cpp
     src/loader/pe_mapper.cpp
+    src/loader/guest_modules.cpp
     src/loader/stub_thunk.cpp
     src/loader/package_vfs.cpp
     src/loader/xvd_container.cpp
@@ -22,7 +23,9 @@ add_library(scarlettx_core STATIC
     src/gpu/d3d12_backend.cpp
     src/gpu/rt_bvh.cpp
     src/gpu/shader_ir.cpp
+    src/gpu/xg_layout.cpp
     src/runtime/emulator.cpp
+    src/runtime/virtual_drive.cpp
 )
 
 target_include_directories(scarlettx_core PUBLIC
@@ -51,7 +54,9 @@ if(WIN32)
             ole32
             uuid
         )
-        add_link_options(-static-libgcc -static-libstdc++)
+        # Also the thread runtime (libwinpthread): a shim that needs a DLL from
+        # the toolchain only loads while the toolchain is on PATH.
+        add_link_options(-static -static-libgcc -static-libstdc++)
     endif()
 endif()
 
@@ -73,7 +78,10 @@ set_target_properties(AcpHal PROPERTIES PREFIX "" OUTPUT_NAME "AcpHal")
 target_link_libraries(AcpHal PRIVATE scarlettx_core)
 target_compile_definitions(AcpHal PRIVATE SCARLETTX_BUILDING_ACPHAL=1)
 
-add_library(xgameruntime SHARED src/shims/xgameruntime_shim.cpp)
+add_library(xgameruntime SHARED
+    src/shims/xgameruntime_shim.cpp
+    src/shims/xgr_api_tables.cpp
+    src/shims/xgr_task_queue.cpp)
 set_target_properties(xgameruntime PROPERTIES PREFIX "" OUTPUT_NAME "xgameruntime")
 target_link_libraries(xgameruntime PRIVATE scarlettx_core)
 target_compile_definitions(xgameruntime PRIVATE SCARLETTX_BUILDING_XGAMERUNTIME=1)
@@ -93,7 +101,7 @@ set_target_properties(dstorage_xs PROPERTIES PREFIX "" OUTPUT_NAME "dstorage_xs"
 target_link_libraries(dstorage_xs PRIVATE scarlettx_core)
 target_compile_definitions(dstorage_xs PRIVATE SCARLETTX_BUILDING_DSTORAGE=1)
 
-add_library(xaudio2_9 SHARED src/shims/xaudio2_shim.cpp src/shims/xaudio2_9.def)
+add_library(xaudio2_9 SHARED src/shims/xaudio2_shim.cpp src/shims/xaudio2_guest.cpp src/shims/xaudio2_null_output.cpp src/shims/xaudio2_9.def)
 set_target_properties(xaudio2_9 PROPERTIES PREFIX "" OUTPUT_NAME "xaudio2_9")
 target_link_libraries(xaudio2_9 PRIVATE scarlettx_core)
 target_compile_definitions(xaudio2_9 PRIVATE SCARLETTX_BUILDING_XAUDIO2=1)
@@ -281,6 +289,7 @@ add_dependencies(test_pe_loader hello_scarlett rt_showcase)
 if(WIN32)
     scarlettx_add_test(test_inproc_loader tests/test_inproc_loader.cpp)
     add_dependencies(test_inproc_loader iat_probe xgameruntime)
+    scarlettx_add_test(test_guest_loader tests/test_guest_loader.cpp)
 endif()
 
 scarlettx_add_test(test_kernel_hle tests/test_kernel_hle.cpp)
@@ -288,7 +297,17 @@ scarlettx_add_test(test_xgameruntime_abi tests/test_xgameruntime_abi.cpp)
 target_link_libraries(test_xgameruntime_abi PRIVATE xgameruntime)
 scarlettx_add_test(test_query_api_impl tests/test_query_api_impl.cpp)
 target_link_libraries(test_query_api_impl PRIVATE xgameruntime)
+scarlettx_add_test(test_xtaskqueue_xasync tests/test_xtaskqueue_xasync.cpp)
+target_link_libraries(test_xtaskqueue_xasync PRIVATE xgameruntime)
 scarlettx_add_test(test_d3d12_warp tests/test_d3d12_warp.cpp)
+scarlettx_add_test(test_xg_layout tests/test_xg_layout.cpp)
+target_link_libraries(test_xg_layout PRIVATE xg_xs)
+scarlettx_add_test(test_d3d12_guest_texture tests/test_d3d12_guest_texture.cpp)
+target_link_libraries(test_d3d12_guest_texture PRIVATE d3d12_xs)
+set_tests_properties(test_d3d12_guest_texture PROPERTIES ENVIRONMENT "SCARLETTX_REAL_TITLE=1")
+scarlettx_add_test(test_d3d12_present_window tests/test_d3d12_present_window.cpp)
+target_link_libraries(test_d3d12_present_window PRIVATE d3d12_xs)
+set_tests_properties(test_d3d12_present_window PROPERTIES ENVIRONMENT "SCARLETTX_REAL_TITLE=1")
 scarlettx_add_test(test_d3d12_xs_abi tests/test_d3d12_xs_abi.cpp)
 target_link_libraries(test_d3d12_xs_abi PRIVATE d3d12_xs XboxBvhBuilder)
 scarlettx_add_test(test_rt_pipeline tests/test_rt_pipeline.cpp)
@@ -296,6 +315,8 @@ scarlettx_add_test(test_dstorage_xvd tests/test_dstorage_xvd.cpp)
 target_link_libraries(test_dstorage_xvd PRIVATE dstorage)
 scarlettx_add_test(test_xaudio2 tests/test_xaudio2.cpp)
 target_link_libraries(test_xaudio2 PRIVATE xaudio2_9)
+scarlettx_add_test(test_xaudio2_guest tests/test_xaudio2_guest.cpp)
+target_link_libraries(test_xaudio2_guest PRIVATE xaudio2_9)
 scarlettx_add_test(test_gameinput tests/test_gameinput.cpp)
 target_link_libraries(test_gameinput PRIVATE GameInput)
 

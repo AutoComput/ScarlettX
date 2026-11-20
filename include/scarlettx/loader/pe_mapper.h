@@ -102,6 +102,7 @@ private:
     bool dll_attached_ = false;
 
     std::vector<void*> loaded_modules_;
+    void* loader_state_ = nullptr;  // TLS binding, unwind table and module registration
     std::vector<PeImportResolution> resolutions_;
     StubThunkTable stubs_;
 };

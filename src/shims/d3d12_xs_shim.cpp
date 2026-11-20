@@ -5,12 +5,15 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include "scarlettx/gpu/xg_layout.h"
+#include <sstream>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -23,6 +26,13 @@
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
+#endif
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#define SCARLETTX_RETURN_ADDRESS() _ReturnAddress()
+#else
+#define SCARLETTX_RETURN_ADDRESS() __builtin_return_address(0)
 #endif
 
 namespace {
@@ -192,13 +202,24 @@ std::unordered_map<uint64_t, std::unique_ptr<D3D12XsDeviceState>> g_devices;
 std::atomic<uint32_t> g_process_debug_flags{0};
 
 bool TraceEnabled() {
-    const char* v = std::getenv("SCARLETTX_TRACE");
-    return v && v[0] != '\0' && v[0] != '0';
+    static const bool enabled = []() {
+        const char* v = std::getenv("SCARLETTX_TRACE");
+        return v && v[0] != '\0' && v[0] != '0';
+    }();
+    return enabled;
 }
 
 bool RealTitleMode() {
     const char* v = std::getenv("SCARLETTX_REAL_TITLE");
     return v && v[0] != '\0' && v[0] != '0';
+}
+
+bool PreferWarpFromEnv(bool fallback) {
+    const char* v = std::getenv("SCARLETTX_PREFER_WARP");
+    if (!v || v[0] == '\0') {
+        return fallback;
+    }
+    return v[0] != '0';
 }
 
 // ---------------------------------------------------------------------------
@@ -412,7 +433,7 @@ constexpr std::array<ComVtableFn, sizeof...(Is) + 3> MakeDescHeapProxyVtable(std
 std::array<ComVtableFn, 16> BuildDescHeapProxyVtable() {
     auto vtbl = MakeDescHeapProxyVtable(std::make_index_sequence<13>{});
     vtbl[6] = &DescHeapProxySetName;      // +0x30
-    vtbl[9] = &DescHeapProxyGetCPUStart;  // +0x48 (verified in real Gen9 title: returns SIZE_T in RAX)
+    vtbl[9] = &DescHeapProxyGetCPUStart;  // +0x48 (verified in ConceptDestruction.exe: returns SIZE_T in RAX)
     vtbl[10] = &DescHeapProxyGetGPUStart; // +0x50
     return vtbl;
 }
@@ -629,6 +650,58 @@ std::array<ComVtableFn, 16> BuildSimpleObjVtable() {
 }
 const auto kXboxSimpleObjProxyVtbl = BuildSimpleObjVtable();
 
+// Guest-facing heap. The host has no heap behind it: the proxy records what
+// the title asked for, and a resource placed in it gets its own host memory.
+// Host heaps are bound to one resource category on tier-1 hardware and have
+// their own placement rules, neither of which the console layout follows.
+// Two resources placed at overlapping offsets therefore do not alias.
+struct XboxD3D12HeapProxy {
+    const ComVtableFn* lpVtbl;
+    std::atomic<uint32_t> ref_count{1};
+#if defined(_WIN32)
+    D3D12_HEAP_DESC desc{};
+#endif
+};
+const ProxyGuid kIidID3D12Heap = {0x6b3b2502u, 0x6e51u, 0x45b3u, {0x90, 0xee, 0x98, 0x84, 0x26, 0x5e, 0x8d, 0xf3}};
+const ProxyGuid kIidIUnknownForHeap = {0x00000000u, 0x0000u, 0x0000u, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+
+intptr_t SCARLETTX_GDK_CALLBACK HeapQueryInterface(void* self, uintptr_t riid, uintptr_t ppv, uintptr_t) {
+    auto** out = reinterpret_cast<void**>(ppv);
+    if (!out) return static_cast<intptr_t>(static_cast<int32_t>(0x80004003u));
+    *out = nullptr;
+    if (!riid) return static_cast<intptr_t>(static_cast<int32_t>(0x80004003u));
+    if (!ProxyGuidEquals(riid, kIidID3D12Heap) && !ProxyGuidEquals(riid, kIidIUnknownForHeap)) {
+        return static_cast<intptr_t>(static_cast<int32_t>(0x80004002u));
+    }
+    static_cast<XboxD3D12HeapProxy*>(self)->ref_count.fetch_add(1, std::memory_order_relaxed);
+    *out = self;
+    return 0;
+}
+intptr_t SCARLETTX_GDK_CALLBACK HeapAddRef(void* self, uintptr_t, uintptr_t, uintptr_t) {
+    return static_cast<intptr_t>(
+        static_cast<XboxD3D12HeapProxy*>(self)->ref_count.fetch_add(1, std::memory_order_relaxed) + 1);
+}
+intptr_t SCARLETTX_GDK_CALLBACK HeapRelease(void* self, uintptr_t, uintptr_t, uintptr_t) {
+    auto* obj = static_cast<XboxD3D12HeapProxy*>(self);
+    const uint32_t rem = obj->ref_count.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (rem == 0) delete obj;
+    return static_cast<intptr_t>(rem);
+}
+template <int Slot>
+intptr_t SCARLETTX_GDK_CALLBACK HeapTracedSlot(void* /*self*/, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
+    if (TraceEnabled()) {
+        std::cerr << "[ScarlettX][d3d12_xs] XboxID3D12Heap::vtable[" << Slot << "](a1=0x" << std::hex << a1
+                  << ", a2=0x" << a2 << ", a3=0x" << a3 << std::dec << ") -> E_NOTIMPL\n";
+    }
+    return static_cast<intptr_t>(static_cast<int32_t>(0x80004001u));
+}
+template <size_t... Is>
+constexpr std::array<ComVtableFn, sizeof...(Is) + 3> MakeHeapVtable(std::index_sequence<Is...>) {
+    return {&HeapQueryInterface, &HeapAddRef, &HeapRelease, &HeapTracedSlot<static_cast<int>(Is + 3)>...};
+}
+const auto kXboxHeapProxyVtbl = MakeHeapVtable(std::make_index_sequence<13>{});
+
+struct GuestTextureMemory;
 struct XboxD3D12ResourceProxy {
     const ComVtableFn* lpVtbl;
     std::atomic<uint32_t> ref_count{1};
@@ -637,8 +710,343 @@ struct XboxD3D12ResourceProxy {
     std::atomic<uint32_t> tracked_state{0};
     DXGI_FORMAT guest_format = DXGI_FORMAT_UNKNOWN;
     bool promoted_typeless = false;
+    GuestTextureMemory* guest_memory = nullptr;
 #endif
 };
+#if defined(_WIN32)
+// Textures the title fills through the address returned by
+// GetGPUVirtualAddress. On the console that address is the texture's own
+// memory, and titles copy cooked texel data (console layout) straight into it.
+// Here it is a write-watched guest buffer that is converted to rows and
+// uploaded into the host texture whenever the title has written to it.
+struct GuestTextureMemory {
+    void* base = nullptr;
+    size_t size = 0;
+    XG_RESOURCE_LAYOUT layout{};
+};
+std::mutex g_guest_textures_mutex;
+std::vector<XboxD3D12ResourceProxy*> g_guest_textures;
+std::atomic<uint64_t> g_upload_textures{0};
+std::atomic<uint64_t> g_upload_bytes{0};
+
+// True when the guest layout describes the same rows as the host texture's
+// subresources. Rules out planar formats and element sizes the layout code
+// does not know, whose conversion would not fit the host footprints.
+bool GuestLayoutMatchesHost(ID3D12Resource* res, const D3D12_RESOURCE_DESC& d, const XG_RESOURCE_LAYOUT& layout) {
+    ID3D12Device* device = nullptr;
+    if (FAILED(res->GetDevice(IID_PPV_ARGS(&device))) || !device) return false;
+    D3D12_FEATURE_DATA_FORMAT_INFO info = {};
+    info.Format = d.Format;
+    bool ok = SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO, &info, sizeof(info))) &&
+              info.PlaneCount == 1;
+    const UINT subresources = static_cast<UINT>(d.MipLevels) * d.DepthOrArraySize;
+    std::vector<UINT> rows(subresources);
+    std::vector<UINT64> row_bytes(subresources);
+    if (ok) {
+        device->GetCopyableFootprints(&d, 0, subresources, 0, nullptr, rows.data(), row_bytes.data(), nullptr);
+        const XG_PLANE_LAYOUT& plane = layout.Plane[0];
+        for (UINT s = 0; ok && s < subresources; ++s) {
+            const XG_MIPLEVEL_LAYOUT& ml = plane.MipLayout[s % d.MipLevels];
+            ok = rows[s] == ml.HeightElements &&
+                 row_bytes[s] == static_cast<UINT64>(ml.WidthElements) * plane.BytesPerElement;
+        }
+    }
+    device->Release();
+    return ok;
+}
+
+void* EnsureGuestTextureMemory(XboxD3D12ResourceProxy* obj) {
+    std::lock_guard<std::mutex> lock(g_guest_textures_mutex);
+    if (obj->guest_memory) return obj->guest_memory->base;
+    const D3D12_RESOURCE_DESC d = obj->pc_res->GetDesc();
+    if (d.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || d.SampleDesc.Count > 1 ||
+        (d.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL))) {
+        return nullptr;
+    }
+    XG_TEXTURE2D_DESC xd{};
+    xd.Width = static_cast<uint32_t>(d.Width);
+    xd.Height = d.Height;
+    xd.MipLevels = d.MipLevels;
+    xd.ArraySize = d.DepthOrArraySize;
+    xd.Format = static_cast<uint32_t>(obj->guest_format != DXGI_FORMAT_UNKNOWN ? obj->guest_format : d.Format);
+    xd.SampleDesc.Count = 1;
+    xd.BindFlags = 0x8;
+    xd.SwizzleMode = XG_SWIZZLE_MODE_4KB_S;
+    auto mem = std::make_unique<GuestTextureMemory>();
+    scarlettx::gpu::xg::ComputeTexture2DLayout(xd, &mem->layout);
+    if (!scarlettx::gpu::xg::IsAddressable(mem->layout) || mem->layout.SizeBytes == 0 ||
+        !GuestLayoutMatchesHost(obj->pc_res, d, mem->layout)) {
+        return nullptr;
+    }
+    mem->size = static_cast<size_t>(mem->layout.SizeBytes);
+    mem->base = VirtualAlloc(nullptr, mem->size, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
+    if (!mem->base) return nullptr;
+    if (TraceEnabled()) {
+        std::ostringstream os;
+        os << "[ScarlettX][d3d12_xs] texture " << d.Width << "x" << d.Height << " mips=" << d.MipLevels
+           << " fmt=" << xd.Format << ": guest memory " << mem->base << " size=0x" << std::hex << mem->size
+           << "\n";
+        std::cerr << os.str();
+    }
+    obj->guest_memory = mem.release();
+    g_guest_textures.push_back(obj);
+    return obj->guest_memory->base;
+}
+
+void ReleaseGuestTextureMemory(XboxD3D12ResourceProxy* obj) {
+    std::lock_guard<std::mutex> lock(g_guest_textures_mutex);
+    if (!obj->guest_memory) return;
+    g_guest_textures.erase(std::remove(g_guest_textures.begin(), g_guest_textures.end(), obj),
+                           g_guest_textures.end());
+    VirtualFree(obj->guest_memory->base, 0, MEM_RELEASE);
+    delete obj->guest_memory;
+    obj->guest_memory = nullptr;
+}
+
+// Converts the given subresources of a texture's guest memory to rows and
+// copies them into the host texture. Blocks until the copy has run so the
+// temporaries can be released.
+void UploadGuestTexture(ID3D12CommandQueue* queue, XboxD3D12ResourceProxy* tex, const std::vector<UINT>& dirty) {
+    ID3D12Device* device = nullptr;
+    if (FAILED(tex->pc_res->GetDevice(IID_PPV_ARGS(&device))) || !device) return;
+    const D3D12_RESOURCE_DESC d = tex->pc_res->GetDesc();
+    const UINT subresources = static_cast<UINT>(d.MipLevels) * d.DepthOrArraySize;
+    std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> fps(subresources);
+    UINT64 total = 0;
+    device->GetCopyableFootprints(&d, 0, subresources, 0, fps.data(), nullptr, nullptr, &total);
+
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = total;
+    bd.Height = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource* upload = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    ID3D12Fence* fence = nullptr;
+    void* mapped = nullptr;
+    const bool ready =
+        total != 0 &&
+        SUCCEEDED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                  nullptr, IID_PPV_ARGS(&upload))) &&
+        SUCCEEDED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))) &&
+        SUCCEEDED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, nullptr, IID_PPV_ARGS(&list))) &&
+        SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))) &&
+        SUCCEEDED(upload->Map(0, nullptr, &mapped));
+    if (ready) {
+        const GuestTextureMemory& mem = *tex->guest_memory;
+        for (const UINT s : dirty) {
+            scarlettx::gpu::xg::CopyFromSubresource(mem.layout, mem.base, s % d.MipLevels, s / d.MipLevels,
+                                                    static_cast<uint8_t*>(mapped) + fps[s].Offset,
+                                                    fps[s].Footprint.RowPitch);
+        }
+        upload->Unmap(0, nullptr);
+        // The state recorded by the title's latest barrier; these textures are
+        // created ready for sampling and are not transitioned by the title.
+        const auto state = static_cast<D3D12_RESOURCE_STATES>(tex->tracked_state.load(std::memory_order_relaxed));
+        D3D12_RESOURCE_BARRIER b = {};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = tex->pc_res;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = state;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        if (state != D3D12_RESOURCE_STATE_COPY_DEST) list->ResourceBarrier(1, &b);
+        for (const UINT s : dirty) {
+            D3D12_TEXTURE_COPY_LOCATION dst = {};
+            dst.pResource = tex->pc_res;
+            dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            dst.SubresourceIndex = s;
+            D3D12_TEXTURE_COPY_LOCATION src = {};
+            src.pResource = upload;
+            src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            src.PlacedFootprint = fps[s];
+            list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        }
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        if (state != D3D12_RESOURCE_STATE_COPY_DEST) list->ResourceBarrier(1, &b);
+        if (SUCCEEDED(list->Close())) {
+            ID3D12CommandList* lists[] = {list};
+            queue->ExecuteCommandLists(1, lists);
+            // The temporaries below must outlive the copy: block until it has
+            // run (a null event makes SetEventOnCompletion wait; a removed
+            // device completes its fences).
+            if (SUCCEEDED(queue->Signal(fence, 1))) fence->SetEventOnCompletion(1, nullptr);
+        }
+    }
+    if (fence) fence->Release();
+    if (list) list->Release();
+    if (alloc) alloc->Release();
+    if (upload) upload->Release();
+    device->Release();
+}
+
+struct GuestTextureUpload {
+    XboxD3D12ResourceProxy* tex = nullptr;
+    std::vector<UINT> dirty;
+    D3D12_RESOURCE_DESC desc{};
+    std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> fps;
+    uint64_t offset = 0;
+    uint64_t size = 0;
+};
+
+// Uploads all dirty textures in one command list and one fence wait. The
+// per-texture version used to allocate, submit and block once per texture,
+// which turned a handful of streamed textures into a long CPU stall.
+void UploadGuestTextureBatch(ID3D12CommandQueue* queue,
+                             std::vector<GuestTextureUpload>& uploads) {
+    if (uploads.empty()) return;
+    ID3D12Device* device = nullptr;
+    if (FAILED(uploads.front().tex->pc_res->GetDevice(IID_PPV_ARGS(&device))) || !device) return;
+
+    uint64_t total = 0;
+    for (GuestTextureUpload& u : uploads) {
+        u.desc = u.tex->pc_res->GetDesc();
+        const UINT subresources = static_cast<UINT>(u.desc.MipLevels) * u.desc.DepthOrArraySize;
+        u.fps.resize(subresources);
+        u.offset = AlignUp(total, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+        device->GetCopyableFootprints(&u.desc, 0, subresources, 0, u.fps.data(), nullptr, nullptr,
+                                      &u.size);
+        total = u.offset + u.size;
+    }
+    if (total == 0) {
+        device->Release();
+        return;
+    }
+    g_upload_bytes.fetch_add(total, std::memory_order_relaxed);
+    g_upload_textures.fetch_add(uploads.size(), std::memory_order_relaxed);
+
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = total;
+    bd.Height = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ID3D12Resource* upload = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    ID3D12Fence* fence = nullptr;
+    void* mapped = nullptr;
+    const bool ready =
+        SUCCEEDED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+                                                  D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                  IID_PPV_ARGS(&upload))) &&
+        SUCCEEDED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                 IID_PPV_ARGS(&alloc))) &&
+        SUCCEEDED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, nullptr,
+                                            IID_PPV_ARGS(&list))) &&
+        SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))) &&
+        SUCCEEDED(upload->Map(0, nullptr, &mapped));
+
+    if (ready) {
+        for (const GuestTextureUpload& u : uploads) {
+            const GuestTextureMemory& mem = *u.tex->guest_memory;
+            for (const UINT s : u.dirty) {
+                scarlettx::gpu::xg::CopyFromSubresource(
+                    mem.layout, mem.base, s % u.desc.MipLevels, s / u.desc.MipLevels,
+                    static_cast<uint8_t*>(mapped) + u.offset + u.fps[s].Offset,
+                    u.fps[s].Footprint.RowPitch);
+            }
+        }
+        upload->Unmap(0, nullptr);
+
+        for (const GuestTextureUpload& u : uploads) {
+            const auto state =
+                static_cast<D3D12_RESOURCE_STATES>(u.tex->tracked_state.load(std::memory_order_relaxed));
+            D3D12_RESOURCE_BARRIER b = {};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.pResource = u.tex->pc_res;
+            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            b.Transition.StateBefore = state;
+            b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+            if (state != D3D12_RESOURCE_STATE_COPY_DEST) list->ResourceBarrier(1, &b);
+            for (const UINT s : u.dirty) {
+                D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = u.fps[s];
+                fp.Offset += u.offset;
+                D3D12_TEXTURE_COPY_LOCATION dst = {};
+                dst.pResource = u.tex->pc_res;
+                dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                dst.SubresourceIndex = s;
+                D3D12_TEXTURE_COPY_LOCATION src = {};
+                src.pResource = upload;
+                src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                src.PlacedFootprint = fp;
+                list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            }
+            std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+            if (state != D3D12_RESOURCE_STATE_COPY_DEST) list->ResourceBarrier(1, &b);
+        }
+
+        if (SUCCEEDED(list->Close())) {
+            ID3D12CommandList* lists[] = {list};
+            queue->ExecuteCommandLists(1, lists);
+            if (SUCCEEDED(queue->Signal(fence, 1))) fence->SetEventOnCompletion(1, nullptr);
+        }
+    }
+
+    if (fence) fence->Release();
+    if (list) list->Release();
+    if (alloc) alloc->Release();
+    if (upload) upload->Release();
+    device->Release();
+}
+
+// Uploads every guest-memory texture the title has written to since the last call.
+void FlushGuestTextureWrites(ID3D12CommandQueue* queue) {
+    std::lock_guard<std::mutex> lock(g_guest_textures_mutex);
+    if (g_guest_textures.empty() || queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) return;
+    std::vector<GuestTextureUpload> uploads;
+    std::vector<void*> pages;
+    std::vector<UINT> dirty;
+    for (XboxD3D12ResourceProxy* tex : g_guest_textures) {
+        GuestTextureMemory& mem = *tex->guest_memory;
+        pages.resize(mem.size / 4096 + 1);
+        ULONG_PTR count = pages.size();
+        DWORD granularity = 0;
+        // Reading resets the watch: a write that lands during the copy is picked up next time.
+        if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, mem.base, mem.size, pages.data(), &count, &granularity) != 0 ||
+            count == 0) {
+            continue;
+        }
+        pages.resize(count);
+        // Only the subresources the title wrote to: the others may hold data
+        // that arrived through command-list copies.
+        const D3D12_RESOURCE_DESC d = tex->pc_res->GetDesc();
+        dirty.clear();
+        for (UINT s = 0; s < static_cast<UINT>(d.MipLevels) * d.DepthOrArraySize; ++s) {
+            uint64_t offset = 0, size = 0;
+            if (!scarlettx::gpu::xg::SubresourceRange(mem.layout, s % d.MipLevels, s / d.MipLevels, &offset, &size)) {
+                continue;
+            }
+            const auto* first = static_cast<const uint8_t*>(mem.base) + offset;
+            const bool written = std::any_of(pages.begin(), pages.end(), [&](void* page) {
+                const auto* p = static_cast<const uint8_t*>(page);
+                return p + granularity > first && p < first + size;
+            });
+            if (written) dirty.push_back(s);
+        }
+        if (dirty.empty()) continue;
+        GuestTextureUpload u;
+        u.tex = tex;
+        u.dirty = dirty;
+        uploads.push_back(std::move(u));
+    }
+    UploadGuestTextureBatch(queue, uploads);
+    if (TraceEnabled() && !uploads.empty()) {
+        std::cerr << "[ScarlettX][d3d12_xs] uploaded " << uploads.size()
+                  << " guest texture(s) in one batch\n";
+    }
+}
+#endif
 intptr_t SCARLETTX_GDK_CALLBACK ResProxyQueryInterface(void* self, uintptr_t, uintptr_t ppv, uintptr_t) {
     auto* obj = static_cast<XboxD3D12ResourceProxy*>(self);
     auto** out = reinterpret_cast<void**>(ppv);
@@ -656,6 +1064,7 @@ intptr_t SCARLETTX_GDK_CALLBACK ResProxyRelease(void* self, uintptr_t, uintptr_t
     const uint32_t rem = obj->ref_count.fetch_sub(1, std::memory_order_acq_rel) - 1;
     if (rem == 0) {
 #if defined(_WIN32)
+        ReleaseGuestTextureMemory(obj);
         if (obj->pc_res) obj->pc_res->Release();
 #endif
         delete obj;
@@ -702,7 +1111,12 @@ intptr_t SCARLETTX_GDK_CALLBACK ResProxyGetDesc(void* self, uintptr_t sret_ptr, 
 intptr_t SCARLETTX_GDK_CALLBACK ResProxyGetGPUVirtualAddress(void* self, uintptr_t, uintptr_t, uintptr_t) {
 #if defined(_WIN32)
     auto* obj = static_cast<XboxD3D12ResourceProxy*>(self);
-    if (obj->pc_res) return static_cast<intptr_t>(obj->pc_res->GetGPUVirtualAddress());
+    if (obj->pc_res) {
+        const auto va = obj->pc_res->GetGPUVirtualAddress();
+        if (va != 0) return static_cast<intptr_t>(va);
+        // Host textures have no address; hand out guest memory the title can fill.
+        return reinterpret_cast<intptr_t>(EnsureGuestTextureMemory(obj));
+    }
 #endif
     return 0;
 }
@@ -918,8 +1332,11 @@ intptr_t SCARLETTX_GDK_CALLBACK CmdListCopyBufferRegion(
 #endif
     return 0;
 }
+std::atomic<uint64_t> g_copy_texture_count{0};
+
 intptr_t SCARLETTX_GDK_CALLBACK CmdListCopyTextureRegion(
     void* self, uintptr_t pDst, uintptr_t dstX, uintptr_t dstY, uintptr_t dstZ, uintptr_t pSrc, uintptr_t pSrcBox) {
+    g_copy_texture_count.fetch_add(1, std::memory_order_relaxed);
 #if defined(_WIN32)
     auto* obj = static_cast<XboxD3D12GraphicsCommandListProxy*>(self);
     if (!obj || !obj->pc_list || !pDst || !pSrc) return 0;
@@ -1030,6 +1447,76 @@ std::atomic<uint64_t> g_set_gdt_count{0};
 std::atomic<uint64_t> g_set_vb_count{0};
 std::atomic<uint64_t> g_set_ib_count{0};
 std::atomic<uint64_t> g_set_vp_count{0};
+std::atomic<uint64_t> g_submit_count{0};
+std::atomic<uint64_t> g_flush_count{0};
+std::atomic<uint64_t> g_flush_us{0};
+std::atomic<uint64_t> g_frame_epoch{0};
+std::atomic<uint64_t> g_flushed_epoch{~0ull};
+
+bool StatsEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("SCARLETTX_STATS");
+        return v && v[0] != '\0' && v[0] != '0';
+    }();
+    return enabled;
+}
+
+void MaybePrintStats(uint64_t frame) {
+    if (!StatsEnabled() || frame == 0) return;
+    static LARGE_INTEGER last_time{};
+    static uint64_t last_frame = 0;
+    static uint64_t last_draw = 0, last_dispatch = 0, last_pso = 0, last_grs = 0,
+                    last_gdt = 0, last_copy = 0, last_submit = 0, last_flush = 0,
+                    last_flush_us = 0, last_bytes = 0;
+    LARGE_INTEGER now{}, freq{};
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    if (last_time.QuadPart != 0) {
+        const double seconds = static_cast<double>(now.QuadPart - last_time.QuadPart) /
+                               static_cast<double>(freq.QuadPart);
+        if (seconds < 1.0) return;
+        const uint64_t frames = frame - last_frame;
+        const double f = frames ? static_cast<double>(frames) : 1.0;
+        const uint64_t draw = g_draw_instanced_count.load() + g_draw_indexed_count.load();
+        const uint64_t dispatch = g_dispatch_count.load();
+        const uint64_t pso = g_set_pso_count.load();
+        const uint64_t grs = g_set_grs_count.load();
+        const uint64_t gdt = g_set_gdt_count.load();
+        const uint64_t copy = g_copy_texture_count.load();
+        const uint64_t submit = g_submit_count.load();
+        const uint64_t flush = g_flush_count.load();
+        const uint64_t flush_us = g_flush_us.load();
+        const uint64_t bytes = g_upload_bytes.load();
+        std::fprintf(stderr,
+                     "[STATS] fps=%.1f draws/f=%.1f disp/f=%.1f pso/f=%.1f grs/f=%.1f "
+                     "gdt/f=%.1f copytex/f=%.1f submit/f=%.1f flush/f=%.2f "
+                     "flush_ms/f=%.2f uploadMB/f=%.2f\n",
+                     frames / seconds, (draw - last_draw) / f, (dispatch - last_dispatch) / f,
+                     (pso - last_pso) / f, (grs - last_grs) / f, (gdt - last_gdt) / f,
+                     (copy - last_copy) / f, (submit - last_submit) / f,
+                     (flush - last_flush) / f, (flush_us - last_flush_us) / 1000.0 / f,
+                     (bytes - last_bytes) / 1048576.0 / f);
+        std::fflush(stderr);
+        last_draw = draw; last_dispatch = dispatch; last_pso = pso; last_grs = grs;
+        last_gdt = gdt; last_copy = copy; last_submit = submit; last_flush = flush;
+        last_flush_us = flush_us; last_bytes = bytes;
+        last_frame = frame;
+        last_time = now;
+        return;
+    }
+    last_time = now;
+    last_frame = frame;
+    last_draw = g_draw_instanced_count.load() + g_draw_indexed_count.load();
+    last_dispatch = g_dispatch_count.load();
+    last_pso = g_set_pso_count.load();
+    last_grs = g_set_grs_count.load();
+    last_gdt = g_set_gdt_count.load();
+    last_copy = g_copy_texture_count.load();
+    last_submit = g_submit_count.load();
+    last_flush = g_flush_count.load();
+    last_flush_us = g_flush_us.load();
+    last_bytes = g_upload_bytes.load();
+}
 
 intptr_t SCARLETTX_GDK_CALLBACK CmdListDrawInstanced(
     void* self, uintptr_t vCount, uintptr_t iCount, uintptr_t startV, uintptr_t startI) {
@@ -1433,9 +1920,28 @@ intptr_t SCARLETTX_GDK_CALLBACK CmdListNoop(void*, uintptr_t, uintptr_t, uintptr
 template <int Slot>
 intptr_t SCARLETTX_GDK_CALLBACK CmdListTracedSlot(void*, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
     if (TraceEnabled()) {
-        std::cerr << "[ScarlettX][d3d12_xs] XboxID3D12GraphicsCommandList::vtable[" << Slot
-                  << "](a1=0x" << std::hex << a1 << ", a2=0x" << a2 << ", a3=0x" << a3
-                  << std::dec << ") -> E_NOTIMPL\n";
+        std::ostringstream line;
+        line << "[ScarlettX][d3d12_xs] XboxID3D12GraphicsCommandList::vtable[" << Slot
+             << "](a1=0x" << std::hex << a1 << ", a2=0x" << a2 << ", a3=0x" << a3
+             << ", caller=0x" << reinterpret_cast<uintptr_t>(SCARLETTX_RETURN_ADDRESS())
+             << std::dec << ") -> E_NOTIMPL";
+#if defined(_WIN32)
+        // Unknown slot: show what a pointer argument refers to, to help identify it.
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (a1 > 0x10000 && VirtualQuery(reinterpret_cast<void*>(a1), &mbi, sizeof(mbi)) &&
+            mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+            a1 + 0x80 <= reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize) {
+            line << " [a1:" << std::hex;
+            for (int i = 0; i < 16; ++i) {
+                uint64_t q = 0;
+                std::memcpy(&q, reinterpret_cast<const void*>(a1 + i * 8), 8);
+                line << ' ' << q;
+            }
+            line << std::dec << ']';
+        }
+#endif
+        line << "\n";
+        std::cerr << line.str();
     }
     return static_cast<intptr_t>(static_cast<int32_t>(0x80004001u));
 }
@@ -1455,6 +1961,10 @@ std::array<ComVtableFn, 96> BuildCmdListVtable() {
     vtbl[14] = &CmdListDispatch;
     vtbl[15] = reinterpret_cast<ComVtableFn>(&CmdListCopyBufferRegion);
     vtbl[16] = reinterpret_cast<ComVtableFn>(&CmdListCopyTextureRegion);
+    // Slot 83 (+0x298), name not verified: the title calls it with the argument
+    // list of slot 16 plus one trailing 32-bit value (0 at every observed call)
+    // to upload its larger textures.
+    vtbl[83] = reinterpret_cast<ComVtableFn>(&CmdListCopyTextureRegion);
     vtbl[17] = &CmdListCopyResource;
     vtbl[20] = &CmdListIASetPrimitiveTopology;
     vtbl[21] = &CmdListRSSetViewports;
@@ -1463,7 +1973,7 @@ std::array<ComVtableFn, 96> BuildCmdListVtable() {
     vtbl[24] = &CmdListOMSetStencilRef;
     vtbl[25] = &CmdListSetPipelineState;
     vtbl[26] = &CmdListResourceBarrier;
-    // Xbox d3d12_xs shifts PC slots >= 28 by +4 (verified from real Gen9 title traces).
+    // Xbox d3d12_xs shifts PC slots >= 28 by +4 (verified from Concept Destruction traces).
     vtbl[32] = &CmdListSetDescriptorHeaps;
     vtbl[33] = &CmdListSetComputeRootSignature;
     vtbl[34] = &CmdListSetGraphicsRootSignature;
@@ -1510,6 +2020,8 @@ struct XboxD3D12CommandQueueProxy {
     ID3D12CommandQueue* pc_queue = nullptr;
     ID3D12Device* pc_device = nullptr;
     HWND present_hwnd = nullptr;
+    HANDLE present_window_thread = nullptr;
+    HANDLE present_window_ready = nullptr;
     IDXGISwapChain3* swapchain = nullptr;
     ID3D12CommandAllocator* present_alloc = nullptr;
     ID3D12GraphicsCommandList* present_list = nullptr;
@@ -1522,6 +2034,10 @@ struct XboxD3D12CommandQueueProxy {
     bool present_init_attempted = false;
 #endif
 };
+
+#if defined(_WIN32)
+void StopPresentWindow(XboxD3D12CommandQueueProxy* obj);
+#endif
 
 intptr_t SCARLETTX_GDK_CALLBACK QueueProxyQueryInterface(void* self, uintptr_t riid, uintptr_t ppv, uintptr_t) {
     auto* obj = static_cast<XboxD3D12CommandQueueProxy*>(self);
@@ -1552,7 +2068,7 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyRelease(void* self, uintptr_t, uintptr
         if (obj->present_list) obj->present_list->Release();
         if (obj->present_alloc) obj->present_alloc->Release();
         if (obj->swapchain) obj->swapchain->Release();
-        if (obj->present_hwnd) DestroyWindow(obj->present_hwnd);
+        StopPresentWindow(obj);
         if (obj->pc_device) obj->pc_device->Release();
         if (obj->pc_queue) obj->pc_queue->Release();
 #endif
@@ -1605,9 +2121,26 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyExecuteCommandLists(
         }
     }
     if (!pc_lists.empty()) {
+        g_submit_count.fetch_add(1, std::memory_order_relaxed);
         if (TraceEnabled()) {
             std::cerr << "[ScarlettX][d3d12_xs] Queue::ExecuteCommandLists(q=" << self
                       << ", count=" << pc_lists.size() << ")\n";
+        }
+        // Flush dirty guest textures once per presented frame, before the first
+        // submit of the frame. Every-submit flushing rescanned every texture
+        // for every command list the title queued.
+        const uint64_t epoch = g_frame_epoch.load(std::memory_order_relaxed);
+        if (g_flushed_epoch.load(std::memory_order_relaxed) != epoch) {
+            LARGE_INTEGER freq{}, start{}, end{};
+            QueryPerformanceFrequency(&freq);
+            QueryPerformanceCounter(&start);
+            FlushGuestTextureWrites(obj->pc_queue);
+            QueryPerformanceCounter(&end);
+            g_flush_us.fetch_add(static_cast<uint64_t>(
+                                     (end.QuadPart - start.QuadPart) * 1000000ll / freq.QuadPart),
+                                 std::memory_order_relaxed);
+            g_flush_count.fetch_add(1, std::memory_order_relaxed);
+            g_flushed_epoch.store(epoch, std::memory_order_relaxed);
         }
         obj->pc_queue->ExecuteCommandLists(static_cast<UINT>(pc_lists.size()), pc_lists.data());
     }
@@ -1681,12 +2214,94 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyGetDesc(void* self, uintptr_t sret_ptr
 }
 
 #if defined(_WIN32)
+constexpr UINT kMsgDestroyPresentWindow = WM_APP + 1;
+
 LRESULT CALLBACK ScarlettXPresentWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    if (msg == WM_CLOSE) {
+    switch (msg) {
+    case WM_CLOSE:
+        return 0;  // the title owns the lifetime of the output
+    case kMsgDestroyPresentWindow:
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
+    case WM_SYSCOMMAND:
+        // Alt and F10 would put the window into menu mode and take the
+        // keyboard. Alt+Space, the system menu, is left alone.
+        if ((wp & 0xFFF0) == SC_KEYMENU && lp != ' ') return 0;
+        break;
+    default:
+        break;
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
+}
+
+// The window has its own thread. DefWindowProc runs modal loops (system menu,
+// moving or sizing the window) that do not return until the user is done; on
+// the thread that calls PresentX that would stop the title's submissions, and
+// a title treats a fence that does not advance as a lost device.
+DWORD WINAPI PresentWindowThread(void* param) {
+    auto* obj = static_cast<XboxD3D12CommandQueueProxy*>(param);
+    // Keep this module loaded for as long as the thread runs its code.
+    HMODULE self = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                       reinterpret_cast<LPCSTR>(&ScarlettXPresentWndProc), &self);
+
+    const char* cls_name = "ScarlettXPresentWindowClass";
+    WNDCLASSEXA wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = ScarlettXPresentWndProc;
+    wc.hInstance = GetModuleHandleA(nullptr);
+    wc.lpszClassName = cls_name;
+    wc.hCursor = LoadCursorA(nullptr, IDC_ARROW);
+    RegisterClassExA(&wc);
+
+    RECT rc{0, 0, 1280, 720};
+    AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+    const HWND hwnd = CreateWindowExA(
+        0, cls_name, "ScarlettX — Xbox Series X|S",
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top,
+        nullptr, nullptr, wc.hInstance, nullptr);
+    if (hwnd) {
+        ShowWindow(hwnd, SW_SHOW);
+        UpdateWindow(hwnd);
+    }
+    obj->present_hwnd = hwnd;
+    SetEvent(obj->present_window_ready);  // obj is not used past this point
+
+    if (hwnd) {
+        MSG msg = {};
+        while (GetMessageA(&msg, nullptr, 0, 0) > 0) {
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
+        }
+    }
+    if (self) FreeLibraryAndExitThread(self, 0);
+    return 0;
+}
+
+void StartPresentWindow(XboxD3D12CommandQueueProxy* obj) {
+    obj->present_window_ready = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    if (!obj->present_window_ready) return;
+    obj->present_window_thread = CreateThread(nullptr, 0, &PresentWindowThread, obj, 0, nullptr);
+    if (obj->present_window_thread) WaitForSingleObject(obj->present_window_ready, INFINITE);
+}
+
+void StopPresentWindow(XboxD3D12CommandQueueProxy* obj) {
+    if (obj->present_window_thread) {
+        if (obj->present_hwnd) PostMessageA(obj->present_hwnd, kMsgDestroyPresentWindow, 0, 0);
+        // The thread no longer touches obj; do not hang a Release on it.
+        WaitForSingleObject(obj->present_window_thread, 5000);
+        CloseHandle(obj->present_window_thread);
+        obj->present_window_thread = nullptr;
+    }
+    if (obj->present_window_ready) {
+        CloseHandle(obj->present_window_ready);
+        obj->present_window_ready = nullptr;
+    }
+    obj->present_hwnd = nullptr;
 }
 
 DXGI_FORMAT NormalizeSwapChainFormat(DXGI_FORMAT fmt) {
@@ -1737,6 +2352,7 @@ void DumpResourceToBmp(
     if (FAILED(obj->pc_device->CreateCommittedResource(
             &rb_heap, D3D12_HEAP_FLAG_NONE, &rb_desc, D3D12_RESOURCE_STATE_COPY_DEST,
             nullptr, __uuidof(ID3D12Resource), reinterpret_cast<void**>(&rb))) || !rb) {
+        std::cerr << "[ScarlettX][d3d12_xs] frame dump: readback buffer creation failed (" << path << ")" << std::endl;
         return;
     }
 
@@ -1812,6 +2428,9 @@ void DumpResourceToBmp(
                                   desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ||
                                   desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS);
             std::ofstream out(path, std::ios::binary);
+            if (!out) {
+                std::cerr << "[ScarlettX][d3d12_xs] frame dump: cannot open " << path << std::endl;
+            }
             if (out) {
                 out.write(reinterpret_cast<const char*>(hdr), sizeof(hdr));
                 std::vector<uint8_t> row_buf(bmp_stride, 0);
@@ -1849,25 +2468,8 @@ void EnsurePresentSwapChain(XboxD3D12CommandQueueProxy* obj, UINT w, UINT h, DXG
     if (!obj || obj->present_init_attempted || !obj->pc_device || !obj->pc_queue) return;
     obj->present_init_attempted = true;
 
-    const char* cls_name = "ScarlettXPresentWindowClass";
-    WNDCLASSEXA wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = ScarlettXPresentWndProc;
-    wc.hInstance = GetModuleHandleA(nullptr);
-    wc.lpszClassName = cls_name;
-    wc.hCursor = LoadCursorA(nullptr, IDC_ARROW);
-    RegisterClassExA(&wc);
-
-    RECT rc{0, 0, 1280, 720};
-    AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
-    obj->present_hwnd = CreateWindowExA(
-        0, cls_name, "ScarlettX — Xbox Series X|S",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top,
-        nullptr, nullptr, wc.hInstance, nullptr);
+    StartPresentWindow(obj);
     if (!obj->present_hwnd) return;
-    ShowWindow(obj->present_hwnd, SW_SHOW);
-    UpdateWindow(obj->present_hwnd);
 
     IDXGIFactory4* factory = nullptr;
     if (FAILED(CreateDXGIFactory2(0, __uuidof(IDXGIFactory4), reinterpret_cast<void**>(&factory))) || !factory) {
@@ -1921,6 +2523,7 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
     void* self, uintptr_t planeCount, uintptr_t pPlaneParams, uintptr_t pPresentParams) {
     static std::atomic<uint64_t> present_count{0};
     const uint64_t n = present_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    g_frame_epoch.fetch_add(1, std::memory_order_relaxed);
 #if defined(_WIN32)
     auto* obj = static_cast<XboxD3D12CommandQueueProxy*>(self);
     XboxD3D12ResourceProxy* src_proxy = nullptr;
@@ -1942,14 +2545,6 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
     if (src_proxy && src_proxy->pc_res && obj && obj->pc_device && obj->pc_queue) {
         const D3D12_RESOURCE_DESC sdesc = src_proxy->pc_res->GetDesc();
         EnsurePresentSwapChain(obj, static_cast<UINT>(sdesc.Width), sdesc.Height, sdesc.Format);
-
-        if (obj->present_hwnd) {
-            MSG msg = {};
-            while (PeekMessageA(&msg, obj->present_hwnd, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&msg);
-                DispatchMessageA(&msg);
-            }
-        }
 
         const auto cur_state = static_cast<D3D12_RESOURCE_STATES>(
             src_proxy->tracked_state.load(std::memory_order_relaxed));
@@ -2015,7 +2610,19 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
         }
 
         if (const char* dump_path = std::getenv("SCARLETTX_DUMP_FRAME"); dump_path && dump_path[0] != '\0') {
-            if (n == 5 || n == 30 || n == 90) {
+            // Frames to dump: SCARLETTX_DUMP_FRAME_AT="5,30,90" (the default).
+            static const std::vector<uint64_t> dump_frames = [] {
+                std::vector<uint64_t> frames;
+                const char* at = std::getenv("SCARLETTX_DUMP_FRAME_AT");
+                std::istringstream list(at && at[0] ? at : "5,30,90");
+                for (std::string item; std::getline(list, item, ',');) {
+                    char* end = nullptr;
+                    const unsigned long long v = std::strtoull(item.c_str(), &end, 10);
+                    if (end != item.c_str()) frames.push_back(v);
+                }
+                return frames;
+            }();
+            if (std::find(dump_frames.begin(), dump_frames.end(), static_cast<uint64_t>(n)) != dump_frames.end()) {
                 DumpResourceToBmp(obj, src_proxy->pc_res, cur_state, std::string(dump_path) + "_" + std::to_string(n) + ".bmp");
             }
         }
@@ -2031,6 +2638,7 @@ intptr_t SCARLETTX_GDK_CALLBACK QueueProxyPresentX(
                   << ", setRT=" << g_om_set_rt_count.load(std::memory_order_relaxed)
                   << ") -> S_OK\n";
     }
+    MaybePrintStats(n);
     return 0;
 }
 
@@ -2356,7 +2964,7 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyTracedSlot(void* /*self*/, uintptr_t a1, ui
     if (TraceEnabled()) {
         uintptr_t norm_ret = 0;
 #if defined(_WIN32)
-        const auto ret = reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+        const auto ret = reinterpret_cast<uintptr_t>(SCARLETTX_RETURN_ADDRESS());
         const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
         if (ret >= base && ret < base + 0x20000000u) {
             norm_ret = 0x140000000ull + (ret - base);
@@ -2787,6 +3395,34 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyGetCustomHeapProperties(
 #endif
 }
 
+// ID3D12Device::CreateHeap. The title passes IID_ID3D12Heap as riid.
+intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateHeap(void* self, uintptr_t pDesc, uintptr_t riid, uintptr_t ppvHeap) {
+#if defined(_WIN32)
+    auto* obj = static_cast<XboxD3D12DeviceProxy*>(self);
+    auto** out = reinterpret_cast<void**>(ppvHeap);
+    if (!obj || !pDesc || !out) return static_cast<intptr_t>(E_INVALIDARG);
+    *out = nullptr;
+    if (riid && !ProxyGuidEquals(riid, kIidID3D12Heap)) return static_cast<intptr_t>(E_NOINTERFACE);
+    auto* proxy = new (std::nothrow) XboxD3D12HeapProxy();
+    if (!proxy) return static_cast<intptr_t>(E_OUTOFMEMORY);
+    proxy->lpVtbl = kXboxHeapProxyVtbl.data();
+    proxy->desc = *reinterpret_cast<const D3D12_HEAP_DESC*>(pDesc);
+    if (TraceEnabled()) {
+        const auto& d = proxy->desc;
+        std::cerr << "[ScarlettX][d3d12_xs] XboxID3D12Device::CreateHeap(size=0x" << std::hex << d.SizeInBytes
+                  << ", type=" << std::dec << static_cast<uint32_t>(d.Properties.Type) << "/"
+                  << static_cast<uint32_t>(d.Properties.CPUPageProperty) << "/"
+                  << static_cast<uint32_t>(d.Properties.MemoryPoolPreference) << ", align=0x" << std::hex
+                  << d.Alignment << ", flags=0x" << static_cast<uint32_t>(d.Flags) << std::dec << ") -> S_OK (proxy="
+                  << proxy << ")\n";
+    }
+    *out = proxy;
+    return 0;
+#else
+    return static_cast<intptr_t>(static_cast<int32_t>(0x80004001u));
+#endif
+}
+
 intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateCommittedResource(
     void* self, uintptr_t pHeapProps, uintptr_t heapFlags, uintptr_t pDesc,
     uintptr_t initialState, uintptr_t pClearVal, uintptr_t /*riid*/, uintptr_t ppvRes) {
@@ -2903,6 +3539,37 @@ intptr_t SCARLETTX_GDK_CALLBACK ProxyCreateCommittedResource(
     proxy->promoted_typeless = promoted_typeless;
     *out = proxy;
     return 0;
+#else
+    return static_cast<intptr_t>(static_cast<int32_t>(0x80004001u));
+#endif
+}
+
+// ID3D12Device::CreatePlacedResource. `pHeap` is a heap proxy from
+// CreateHeap; the resource gets host memory of its own with the heap's
+// properties (see XboxD3D12HeapProxy), so `heapOffset` only matters to the
+// title's own bookkeeping.
+intptr_t SCARLETTX_GDK_CALLBACK ProxyCreatePlacedResource(
+    void* self, uintptr_t pHeap, uintptr_t heapOffset, uintptr_t pDesc,
+    uintptr_t initialState, uintptr_t pClearVal, uintptr_t riid, uintptr_t ppvRes) {
+#if defined(_WIN32)
+    auto* heap = reinterpret_cast<XboxD3D12HeapProxy*>(pHeap);
+    auto** out = reinterpret_cast<void**>(ppvRes);
+    if (out) *out = nullptr;
+    if (!heap || heap->lpVtbl != kXboxHeapProxyVtbl.data() || !pDesc || !out) {
+        return static_cast<intptr_t>(E_INVALIDARG);
+    }
+    // The category restrictions describe the heap, not a committed resource.
+    const uint32_t category_flags = D3D12_HEAP_FLAG_DENY_BUFFERS | D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES |
+                                    D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES;
+    const uintptr_t heap_flags = static_cast<uint32_t>(heap->desc.Flags) & ~category_flags;
+    const intptr_t hr = ProxyCreateCommittedResource(
+        self, reinterpret_cast<uintptr_t>(&heap->desc.Properties), heap_flags, pDesc, initialState, pClearVal, riid,
+        ppvRes);
+    if (TraceEnabled()) {
+        std::cerr << "[ScarlettX][d3d12_xs] XboxID3D12Device::CreatePlacedResource(heap=" << heap << ", offset=0x"
+                  << std::hex << heapOffset << ") -> 0x" << static_cast<uint32_t>(hr) << std::dec << "\n";
+    }
+    return hr;
 #else
     return static_cast<intptr_t>(static_cast<int32_t>(0x80004001u));
 #endif
@@ -3131,6 +3798,8 @@ std::array<ComVtableFn, 128> BuildXboxDeviceProxyVtable() {
     vtbl[25] = reinterpret_cast<ComVtableFn>(&ProxyGetResourceAllocationInfo);         // +0xc8
     vtbl[26] = &ProxyGetCustomHeapProperties;                                          // +0xd0
     vtbl[27] = reinterpret_cast<ComVtableFn>(&ProxyCreateCommittedResource);           // +0xd8
+    vtbl[28] = &ProxyCreateHeap;                                                       // +0xe0
+    vtbl[29] = reinterpret_cast<ComVtableFn>(&ProxyCreatePlacedResource);              // +0xe8
     vtbl[36] = reinterpret_cast<ComVtableFn>(&ProxyCreateFence);                       // +0x120
     vtbl[37] = &ProxyGetDeviceRemovedReason;                                           // +0x128
     vtbl[38] = reinterpret_cast<ComVtableFn>(&ProxyGetCopyableFootprints);             // +0x130
@@ -3186,7 +3855,8 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12XboxCreateDevice(
                   << std::dec << ")\n";
     }
 
-    const bool prefer_warp = pParameters ? (pParameters->PreferWarp != 0) : true;
+    const bool prefer_warp =
+        PreferWarpFromEnv(pParameters ? (pParameters->PreferWarp != 0) : true);
     const uint32_t dbg_flags =
         (pParameters ? pParameters->ProcessDebugFlags : 0u) |
         g_process_debug_flags.load(std::memory_order_relaxed);
@@ -3209,15 +3879,48 @@ int32_t SCARLETTX_GDK_CALLBACK D3D12XboxCreateDevice(
     }
 
     IDXGIAdapter1* adapter = nullptr;
-    if (pAdapter) {
-        adapter = static_cast<IDXGIAdapter1*>(pAdapter);
-        adapter->AddRef();
-    } else if (prefer_warp) {
+    if (prefer_warp) {
         hr = factory->EnumWarpAdapter(__uuidof(IDXGIAdapter1), reinterpret_cast<void**>(&adapter));
     } else {
-        hr = factory->EnumAdapters1(0, &adapter);
+        if (pAdapter) {
+            adapter = static_cast<IDXGIAdapter1*>(pAdapter);
+            adapter->AddRef();
+            DXGI_ADAPTER_DESC1 requested{};
+            if (SUCCEEDED(adapter->GetDesc1(&requested)) &&
+                (requested.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) {
+                adapter->Release();
+                adapter = nullptr;
+            }
+        }
+        if (!adapter) {
+            IDXGIFactory6* factory6 = nullptr;
+            if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory6),
+                                                  reinterpret_cast<void**>(&factory6))) &&
+                factory6) {
+                factory6->EnumAdapterByGpuPreference(
+                    0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, __uuidof(IDXGIAdapter1),
+                    reinterpret_cast<void**>(&adapter));
+                factory6->Release();
+            }
+        }
+        if (!adapter) {
+            hr = factory->EnumAdapters1(0, &adapter);
+        }
         if (FAILED(hr) || !adapter) {
             hr = factory->EnumWarpAdapter(__uuidof(IDXGIAdapter1), reinterpret_cast<void**>(&adapter));
+        }
+    }
+
+    {
+        DXGI_ADAPTER_DESC1 chosen{};
+        if (adapter && SUCCEEDED(adapter->GetDesc1(&chosen))) {
+            std::fprintf(stderr, "[ScarlettX][d3d12] Adapter: %ls%s\n", chosen.Description,
+                         (chosen.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? " (WARP/software)"
+                                                                     : " (hardware)");
+            std::fflush(stderr);
+        } else {
+            std::fprintf(stderr, "[ScarlettX][d3d12] Adapter: none\n");
+            std::fflush(stderr);
         }
     }
 
@@ -3385,7 +4088,7 @@ int32_t D3D12XboxCreateSyntheticDevice(const D3D12XBOX_CREATE_DEVICE_PARAMETERS*
     if (!out_device_handle) {
         return -1;
     }
-    const bool prefer_warp = params ? (params->PreferWarp != 0) : true;
+    const bool prefer_warp = PreferWarpFromEnv(params ? (params->PreferWarp != 0) : true);
     const bool debug_layer = params ? (params->ProcessDebugFlags != 0) : false;
 
     auto state = std::make_unique<D3D12XsDeviceState>();
@@ -3739,6 +4442,12 @@ int32_t D3D12XboxGetRaytracingAccelerationStructurePrebuildInfo(
         out_info->ResultDataMaxSizeInBytes = info.ResultDataMaxSizeInBytes;
         out_info->ScratchDataSizeInBytes = info.ScratchDataSizeInBytes;
         out_info->UpdateScratchDataSizeInBytes = info.UpdateScratchDataSizeInBytes;
+        // Hosts that update in place (current WARP) report 0 here. Keep the size
+        // non-zero when updates were requested so the guest can allocate the buffer.
+        if ((inputs->Flags & D3D12XBOX_AS_BUILD_FLAG_ALLOW_UPDATE) &&
+            out_info->UpdateScratchDataSizeInBytes == 0) {
+            out_info->UpdateScratchDataSizeInBytes = 256;
+        }
         return 0;
     }
 #endif

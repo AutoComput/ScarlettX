@@ -11,6 +11,7 @@ Outputs:
 
 from __future__ import annotations
 
+import argparse
 import html
 import math
 import pathlib
@@ -94,6 +95,45 @@ def count_exported_symbols(header: pathlib.Path, macro: str, prefix: str) -> int
         re.MULTILINE | re.DOTALL,
     )
     return len(set(pat.findall(text)))
+
+
+def read_ctest_results(build_dir: pathlib.Path) -> tuple[int, list[str]] | None:
+    """Passed count and failed test names of the build tree's last CTest run, if it has one."""
+    log = build_dir / "Testing/Temporary/LastTest.log"
+    if not log.exists():
+        return None
+    text = log.read_text(encoding="utf-8", errors="ignore")
+    results = re.findall(r"^\d+/\d+ Test: (\S+)$.*?^Test (Passed|Failed)\.$", text, re.MULTILINE | re.DOTALL)
+    if not results:
+        return None
+    failed = [name for name, outcome in results if outcome == "Failed"]
+    return len(results) - len(failed), failed
+
+
+def tests_label(test_count: int, results: tuple[int, list[str]] | None) -> str:
+    if results is None:
+        return f"{test_count} defined, not run"
+    passed, failed = results
+    return f"{passed}/{passed + len(failed)} passing"
+
+
+def tests_markdown(test_count: int, results: tuple[int, list[str]] | None) -> str:
+    if results is None:
+        return f"`{test_count}` defined, not run"
+    passed, failed = results
+    text = f"`{passed}/{passed + len(failed)}` passing"
+    if failed:
+        text += " (failing: " + ", ".join(f"`{name}`" for name in failed) + ")"
+    return text
+
+
+MAIN_MENU_FPS_CAPTION = "Max FPS: 1189<br>Average FPS: 1082<br>Minimum FPS: 264"
+IN_GAME_FPS_CAPTION = "Max FPS: 247<br>Average FPS: 188<br>Minimum FPS: 91"
+
+SCREENSHOTS = [
+    ("docs/image_00_01.png", "Main menu", "Concept Destruction main menu running in ScarlettX", MAIN_MENU_FPS_CAPTION),
+    ("docs/image_00_02.png", "In game", "Concept Destruction gameplay running in ScarlettX", IN_GAME_FPS_CAPTION),
+]
 
 
 def collect_metrics() -> tuple[list[Subsystem], int, int]:
@@ -192,127 +232,133 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             name="d3d12_xs → PC D3D12 & PSOs",
             short_name="d3d12",
             category="Graphics",
-            implemented=11,
-            target=50,
+            implemented=d3d_cnt + shader_ir_ready,
+            target=46,
             notes=(
-                "Xbox COM proxies for device/queues/fences/heaps/PSOs/cmdlists/PresentX swapchain; "
-                "boots an unencrypted indie title to PresentX, but frames are still white (descriptor translation, sync & tiled copies pending)"
+                f"{d3d_cnt} exports + DXIL/DXBC container parser & Xbox-chunk stripper; "
+                "root signatures, descriptor heaps, graphics/compute/software-DXR PSOs, pipeline cache, WARP or hardware adapter"
             ),
         ),
         Subsystem(
             name="XTaskQueue & XAsync",
             short_name="XTask",
             category="xgameruntime",
-            implemented=7,
-            target=20,
-            notes=f"{xtask_cnt} XTaskQueue + {xasync_cnt} XAsync exports; manual/threadpool queues working, ABI/teardown hardening pending",
+            implemented=xtask_cnt + xasync_cnt,
+            target=24,
+            notes=f"{xtask_cnt} XTaskQueue + {xasync_cnt} XAsync exports (manual/threadpool/delayed/monitors/cancel)",
         ),
         Subsystem(
-            name="XGameSave (offline)",
+            name="XGameSave (persistent)",
             short_name="Save",
             category="xgameruntime",
-            implemented=8,
-            target=16,
-            notes=f"{xgamesave_cnt} exports; local disk-backed containers & sync/async blob R/W (not yet verified in a real commercial title)",
+            implemented=xgamesave_cnt,
+            target=22,
+            notes=f"{xgamesave_cnt} exports; disk-backed containers, sync/async blob R/W, quota, delete",
         ),
         Subsystem(
-            name="XUser & Identity (offline)",
+            name="XUser & Identity",
             short_name="XUser",
             category="xgameruntime",
-            implemented=5,
-            target=20,
-            notes=f"{xuser_cnt} exports; offline synthetic Xbox Live profile, XUID & gamertag stubs only",
+            implemented=xuser_cnt,
+            target=24,
+            notes=f"{xuser_cnt} exports; synthetic Xbox Live profile, XUID, gamertag components, privileges",
         ),
         Subsystem(
-            name="XSystem & QueryApiImpl",
+            name="XSystem & Runtime",
             short_name="XSys",
             category="xgameruntime",
-            implemented=7,
-            target=20,
-            notes=f"{xruntime_cnt + xsystem_cnt} exports + 2 reverse-engineered QueryApiImpl COM tables; additional runtime GUIDs still E_NOINTERFACE",
+            implemented=xruntime_cnt + xsystem_cnt,
+            target=18,
+            notes=f"{xruntime_cnt + xsystem_cnt} exports; Scarlett Anaconda device info, runtime/analytics, handle validation",
         ),
         Subsystem(
             name="XMem & Threading",
             short_name="XMem",
             category="xgameruntime",
-            implemented=4,
-            target=20,
-            notes=f"{xmem_cnt} exports; basic alloc hooks & VirtualAlloc/Free (no Xbox MEM_GRAPHICS or physical-virtual aliasing)",
+            implemented=xmem_cnt,
+            target=16,
+            notes=f"{xmem_cnt} exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state",
         ),
         Subsystem(
             name="DXR / XboxBvhBuilder",
             short_name="DXR",
             category="Graphics",
-            implemented=2,
-            target=20,
+            implemented=bvh_cnt + 4,
+            target=14,
             notes=(
-                f"{bvh_cnt} synthetic BVH exports + software BVH test fallback only; real XboxBvhBuilder ABI & GPU DXR unimplemented"
+                f"{bvh_cnt} BVH exports + DXR AS prebuild/build/destroy, BLAS update, single-ray trace, "
+                "deterministic software BVH fallback (hardware DXR requires capable GPU)"
             ),
         ),
         Subsystem(
             name="DirectStorage & XVD",
             short_name="DStor",
             category="Storage",
-            implemented=4,
-            target=20,
+            implemented=ds_cnt + (1 if (ROOT / "src/loader/xvd_container.cpp").exists() else 0),
+            target=24,
             notes=(
-                f"{ds_cnt} dstorage_xs exports + unencrypted XVD parser/PackageVfs; synthetic LZ-RLE test codec only (no GDeflate/BCPack)"
+                f"{ds_cnt} DStorage exports + unencrypted XVD parser/PackageVfs mounting; "
+                "async worker queues, fence/status arrays, cancellation, synthetic LZ-RLE test codec"
             ),
         ),
         Subsystem(
             name="Audio (XAudio2 / AcpHal)",
             short_name="Audio",
             category="Media",
-            implemented=3,
-            target=20,
+            implemented=xa_cnt,
+            target=32,
             notes=(
-                f"{xa_cnt} exports; AcpHal APU/SHAPE allocators work on real title, XAudio2_9 ordinal #1 still fails closed (E_NOTIMPL)"
+                f"{xa_cnt} exports (XAudio2_9 ordinal #1 + AcpHal.dll APU/SHAPE shims); "
+                "headless PCM mixer, WAV writer, fail-closed real-title COM guard, synthetic XMA2 test decoder"
             ),
         ),
         Subsystem(
             name="Input (GameInput)",
             short_name="Input",
             category="Input",
-            implemented=3,
-            target=20,
+            implemented=gi_cnt,
+            target=16,
             notes=(
-                f"{gi_cnt} exports (ordinal #1); virtual controller scaffold only, live host XInput/keyboard bridge pending"
+                f"{gi_cnt} exports; virtual Xbox Series controller & keyboard, reading history "
+                "(Current/Next/Previous), state injection, 4-motor rumble state (stored, not sent to the host controller)"
             ),
         ),
         Subsystem(
             name="Middleware (Bink2 / FSR)",
             short_name="Midw",
             category="Middleware",
-            implemented=1,
-            target=20,
+            implemented=bink_cnt + ffx_cnt,
+            target=34,
             notes=(
-                f"{bink_cnt} Bink2 + {ffx_cnt} FidelityFX offline test stubs only (no real video decoding or GPU upscaling)"
+                f"{bink_cnt} Bink2Scarlett + {ffx_cnt} amd_fidelityfx_loader/upscaler_xbox exports; "
+                "deterministic offline HLE shims (synthetic RGBA/BGRA frames, bilinear upscale & hash)"
             ),
         ),
         Subsystem(
             name="Networking (HTTP / XCurl)",
             short_name="Net",
             category="Networking",
-            implemented=2,
-            target=20,
+            implemented=hc_cnt + curl_cnt,
+            target=40,
             notes=(
-                f"{hc_cnt} libHttpClient + {curl_cnt} XCurl offline mock shims only (no live HTTP/TLS transport)"
+                f"{hc_cnt} libHttpClient.GDK + {curl_cnt} XCurl exports; "
+                "deterministic offline mock registry, async callbacks, headers, fallback responses"
             ),
         ),
         Subsystem(
             name="PE64 Loader & Auto-Stubs",
             short_name="PE64",
             category="Core",
-            implemented=5,
-            target=11,
-            notes="PE32+ mapping, relocs, named/ordinal IAT, API-sets, auto-stubs; unwind tables, implicit TLS & PEB image base pending",
+            implemented=loader_features,
+            target=6,
+            notes="PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks",
         ),
         Subsystem(
             name="Xbox Unified Memory & KernelX",
             short_name="Kern",
             category="Platform",
             implemented=0,
-            target=16,
+            target=14,
             notes="MEM_GRAPHICS, 64 KB / 4 MB physical-virtual aliasing, full Game OS kernel services",
         ),
         Subsystem(
@@ -344,7 +390,7 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             short_name="Vulk",
             category="Graphics",
             implemented=0,
-            target=16,
+            target=14,
             notes="Hardware GPU ray tracing (DXR Tier 1.1) and cross-platform Vulkan / vkd3d-proton backend",
         ),
         Subsystem(
@@ -360,8 +406,8 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
     return subsystems, total_exports, test_count
 
 
-def collect_indie_game_metrics() -> list[Subsystem]:
-    """Verified real-title bring-up progress for an unencrypted Scarlett Gen9 Unity IL2CPP indie game."""
+def collect_concept_destruction_metrics() -> list[Subsystem]:
+    """Verified real-title bring-up progress for Concept Destruction (Scarlett Gen9 Unity IL2CPP)."""
     return [
         Subsystem(
             name="PE64 Mapping & Imports",
@@ -375,57 +421,57 @@ def collect_indie_game_metrics() -> list[Subsystem]:
             name="xgameruntime & QueryApiImpl",
             short_name="XGR",
             category="Runtime",
-            implemented=4,
+            implemented=6,
             target=6,
-            notes="InitializeApiImplEx, GUIDs {073B7DCB-...} & {37E56907-...}, task queues; 2 GUIDs still E_NOINTERFACE",
+            notes="Every QueryApiImpl table the title requests resolves (task queues, XNetworking, XGame, XSystem, XUser, XGameSave); XUserGetTokenAndSignatureAsync still E_NOTIMPL",
         ),
         Subsystem(
             name="d3d12_xs Device & Resources",
             short_name="Dev",
             category="Graphics",
-            implemented=6,
+            implemented=7,
             target=8,
-            notes="Device, queues (0x2/0x10), fences, descriptor heaps, root sigs, graphics PSOs, 1080p RTs",
+            notes="Device, queues, fences, descriptor heaps, root sigs, PSOs, 1080p RTs, CreateHeap/CreatePlacedResource, guest texture memory; one device slot unresolved",
         ),
         Subsystem(
             name="xg_xs & AcpHal Shims",
             short_name="XG/APU",
             category="Platform",
-            implemented=2,
+            implemented=3,
             target=4,
-            notes="XGComputeOptimalSwizzleMode, XGCreateTexture2DComputer, AcpHal shape-context allocation",
+            notes="Console texture layout (4KB_S addressing) checked against the console xg_xs.dll, AcpHal shape-context allocation; rest of AcpHal unverified",
         ),
         Subsystem(
             name="d3d12_xs CmdList & Uploads",
             short_name="CmdL",
             category="Graphics",
-            implemented=5,
+            implemented=8,
             target=10,
-            notes="0x1000 proxy layout, Close (102k+ calls) & ExecuteCommandLists (61k+ calls); descriptor translation & tiled copy ABI pending",
+            notes="Command lists run through gameplay with no Close failure or device removal; slot 83 handled as a texture-region copy (name unverified), slot 67 still E_NOTIMPL",
         ),
         Subsystem(
             name="Presentation & First Frame",
             short_name="Pres",
             category="Graphics",
-            implemented=1,
+            implemented=4,
             target=5,
-            notes="Reaches triple-buffered PresentX (350+ calls) & DXGI swapchain, but frame captures are still all-white",
+            notes="PresentX window on its own thread, real 1920x1080 frames; on a hardware GPU about 105 fps at 2,400 draws per frame; the title's frame interval is ignored (uncapped) and Alt+Enter fullscreen freezes the picture",
         ),
         Subsystem(
             name="Audio & Input (Runtime)",
             short_name="Aud/In",
             category="Media",
-            implemented=0,
+            implemented=3,
             target=4,
-            notes="XAudio2_9 Xbox COM wrapper, FMOD audio output, live GameInput polling, rumble",
+            notes="Guest-facing XAudio2 objects forwarding to the host XAudio2 2.9, sound audible in play; GameInput polling verified for A, B, D-pad, left stick, right trigger, and with a real Xbox controller; rumble is not forwarded to the controller",
         ),
         Subsystem(
             name="In-Game & Playable",
             short_name="Game",
             category="Gameplay",
-            implemented=0,
+            implemented=5,
             target=5,
-            notes="Title screen, menus, 3D gameplay rendering, physics/collision, save persistence",
+            notes="Logos, intro cutscene, menus, events with driving and collisions through to the results screen, at full speed on a hardware GPU, with keyboard or an Xbox controller; a championship in progress continues after a restart",
         ),
     ]
 
@@ -657,7 +703,7 @@ def render_svg(
     return "\n".join(lines) + "\n"
 
 
-def render_html(subsystems: list[Subsystem], total_exports: int, test_count: int) -> str:
+def render_html(subsystems: list[Subsystem], total_exports: int, tests_text: str, tests_ok: bool) -> str:
     total_impl = sum(s.implemented for s in subsystems)
     total_target = sum(s.target for s in subsystems)
     overall_pct = (total_impl / total_target * 100.0) if total_target else 0.0
@@ -732,6 +778,7 @@ def render_html(subsystems: list[Subsystem], total_exports: int, test_count: int
   .badge .v-fn {{ background: var(--lv2); color: var(--bg); }}
   .badge .v-exports {{ background: var(--badge-exports); }}
   .badge .v-tests {{ background: var(--badge-tests); }}
+  .badge .v-tests-warn {{ background: var(--warn); }}
   .badge .v-target {{ background: var(--badge-target); }}
   .graph-box {{
     border: 1px solid var(--border);
@@ -783,7 +830,7 @@ def render_html(subsystems: list[Subsystem], total_exports: int, test_count: int
   <div class="badges">
     <span class="badge"><span class="k">functions</span><span class="v-fn">{total_impl}/{total_target}</span></span>
     <span class="badge"><span class="k">exports</span><span class="v-exports">{total_exports}</span></span>
-    <span class="badge"><span class="k">tests</span><span class="v-tests">{test_count}/{test_count} passing</span></span>
+    <span class="badge"><span class="k">tests</span><span class="{'v-tests' if tests_ok else 'v-tests-warn'}">{tests_text}</span></span>
     <span class="badge"><span class="k">target</span><span class="v-target">Xbox Series X|S (Gen9)</span></span>
   </div>
   <section class="graph-box" aria-label="Implemented functions per subsystem, one square per function">
@@ -837,7 +884,7 @@ def render_markdown_status(
     subsystems: list[Subsystem],
     cd_subsystems: list[Subsystem],
     total_exports: int,
-    test_count: int,
+    tests_md: str,
 ) -> str:
     total_impl = sum(s.implemented for s in subsystems)
     total_target = sum(s.target for s in subsystems)
@@ -854,12 +901,24 @@ def render_markdown_status(
         "",
         "![ScarlettX Status](docs/status.svg)",
         "",
-        "![Status of Indie Game](docs/status_indie_game.svg)",
+        "![Status of the game Concept Destruction](docs/status_concept_destruction.svg)",
         "",
-        f"**Emulator Status:** `{overall_pct:.1f}%` ({total_impl} of {total_target} tracked milestones, including unimplemented `0%` subsystems) · "
-        f"**Indie Game (Gen9 Unity IL2CPP):** `{cd_pct:.1f}%` ({cd_impl} of {cd_target} bring-up milestones) · "
+    ]
+    shots = [shot for shot in SCREENSHOTS if (ROOT / shot[0]).exists()]
+    if shots:
+        rows += [
+            "| " + " | ".join(title for _, title, _, _ in shots) + " |",
+            "|" + " :---: |" * len(shots),
+            "| " + " | ".join(f"![{alt}]({path})" for path, _, alt, _ in shots) + " |",
+        ]
+        if any(caption for _, _, _, caption in shots):
+            rows.append("| " + " | ".join(caption for _, _, _, caption in shots) + " |")
+        rows.append("")
+    rows += [
+        f"**Emulator Status:** `{overall_pct:.1f}%` ({total_impl} of {total_target} tracked functions, including unimplemented `0%` subsystems) · "
+        f"**Concept Destruction:** `{cd_pct:.1f}%` ({cd_impl} of {cd_target} bring-up milestones) · "
         f"**Exports:** `{total_exports}` · "
-        f"**Tests:** `{test_count}/{test_count}` passing · "
+        f"**Tests:** {tests_md} · "
         "**Target:** `Xbox Series X|S (Gen9)`",
         "",
         "| Subsystem | Category | Progress | Coverage | Details |",
@@ -876,21 +935,36 @@ def render_markdown_status(
         "and live XSAPI/WinRT services. Passing synthetic tests do not imply commercial retail title execution."
     )
     rows.append("")
-    rows.append("_Regenerate with `python tools/generate_status.py` after adding new HLE APIs or subsystems._")
+    rows.append(
+        "_Regenerate with `python tools/generate_status.py --build-dir <build tree>` after adding new HLE APIs or subsystems; "
+        "the test numbers are read from that tree's last `ctest` run._"
+    )
     rows.append("<!-- SCARLETTX_STATUS_END -->")
     return "\n".join(rows)
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate the ScarlettX status dashboard and README status section.")
+    parser.add_argument(
+        "--build-dir",
+        type=pathlib.Path,
+        default=ROOT / "build",
+        help="build tree whose last CTest run supplies the test results (default: <repo>/build)",
+    )
+    args = parser.parse_args()
+
     subsystems, total_exports, test_count = collect_metrics()
-    cd_subsystems = collect_indie_game_metrics()
+    cd_subsystems = collect_concept_destruction_metrics()
+    test_results = read_ctest_results(args.build_dir)
+    tests_text = tests_label(test_count, test_results)
+    tests_ok = test_results is not None and not test_results[1]
 
     total_impl = sum(s.implemented for s in subsystems)
     total_target = sum(s.target for s in subsystems)
     main_badges = [
-        ("milestones", f"{total_impl}/{total_target}", BADGE_FN, True),
+        ("functions", f"{total_impl}/{total_target}", BADGE_FN, True),
         ("exports", str(total_exports), BADGE_EXPORTS, False),
-        ("tests", f"{test_count}/{test_count} passing", BADGE_TESTS, False),
+        ("tests", tests_text, BADGE_TESTS if tests_ok else WARN, not tests_ok),
         ("target", "Xbox Series X|S (Gen9)", BADGE_TARGET, False),
     ]
     svg = render_svg(
@@ -906,30 +980,32 @@ def main() -> None:
     cd_target = sum(s.target for s in cd_subsystems)
     cd_badges = [
         ("milestones", f"{cd_impl}/{cd_target}", BADGE_FN, True),
-        ("phase", "Phase 3: PresentX (white frames)", BADGE_EXPORTS, False),
-        ("state", "Boots to PresentX", BADGE_TARGET, False),
-        ("target", "Indie Game (Gen9)", BADGE_TESTS, False),
+        ("phase", "In-game", BADGE_EXPORTS, False),
+        ("state", "Full speed on GPU, with sound", BADGE_TARGET, False),
+        ("target", "Concept Destruction (Gen9)", BADGE_TESTS, False),
     ]
     cd_svg = render_svg(
         cd_subsystems,
         badges=cd_badges,
-        heading_prefix="Status of Indie Game",
-        callout_lead="Current blocker:",
-        callout_line1="Reaches triple-buffered PresentX (zero crashes/device removals), but frame captures are still all-white;",
-        callout_line2="descriptor-handle translation and render-queue synchronization before PresentX are under investigation.",
+        heading_prefix="Status of the game Concept Destruction",
+        callout_lead="Open issues:",
+        callout_line1="Alt+Enter fullscreen freezes the picture; frame pacing is uncapped; rumble is not sent",
+        callout_line2="to the controller; CmdList slot 67 is unimplemented.",
     )
 
-    html_doc = render_html(subsystems, total_exports, test_count)
+    html_doc = render_html(subsystems, total_exports, tests_text, tests_ok)
 
     out_svg = ROOT / "docs/status.svg"
-    out_cd_svg = ROOT / "docs/status_indie_game.svg"
+    out_cd_svg = ROOT / "docs/status_concept_destruction.svg"
     out_html = ROOT / "docs/status.html"
     out_svg.parent.mkdir(parents=True, exist_ok=True)
     out_svg.write_text(svg, encoding="utf-8")
     out_cd_svg.write_text(cd_svg, encoding="utf-8")
     out_html.write_text(html_doc, encoding="utf-8")
 
-    md_block = render_markdown_status(subsystems, cd_subsystems, total_exports, test_count)
+    md_block = render_markdown_status(
+        subsystems, cd_subsystems, total_exports, tests_markdown(test_count, test_results)
+    )
     readme_path = ROOT / "README.md"
     readme = readme_path.read_text(encoding="utf-8")
 
@@ -949,7 +1025,7 @@ def main() -> None:
     readme_path.write_text(new_readme, encoding="utf-8")
     print(
         f"[generate_status] Wrote {out_svg.relative_to(ROOT)}, {out_cd_svg.relative_to(ROOT)}, "
-        f"{out_html.relative_to(ROOT)}, and updated README.md (exports={total_exports}, tests={test_count})"
+        f"{out_html.relative_to(ROOT)}, and updated README.md (exports={total_exports}, tests: {tests_text})"
     )
 
 

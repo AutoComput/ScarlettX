@@ -9,8 +9,10 @@ namespace scarlettx {
 
 struct EmulatorConfig {
     bool headless = true;
-    bool prefer_warp = true;
+    bool prefer_warp = false;
     bool enable_debug_layer = false;
+    bool trace = false;
+    bool stats = false;
     bool in_process = false;
     bool force_relocate = false;
     uint32_t render_width = 320;

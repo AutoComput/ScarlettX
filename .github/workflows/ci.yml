@@ -9,6 +9,11 @@ on:
 jobs:
   build-and-test-windows:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, Debug]
+    name: build-and-test-windows (${{ matrix.build_type }})
     steps:
       - uses: actions/checkout@v4
 
@@ -16,7 +21,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Configure CMake
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
 
       - name: Build ScarlettX + HLE Shims + Synthetic Games
         run: cmake --build build --parallel
@@ -28,7 +33,20 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scarlettx-test-frames
+          name: scarlettx-test-frames-${{ matrix.build_type }}
           path: |
             build/*.ppm
           if-no-files-found: ignore
+
+      - name: Summarize Failed Tests
+        if: failure()
+        shell: pwsh
+        run: |
+          $dir = "build/Testing/Temporary"
+          if (Test-Path "$dir/LastTestsFailed.log") {
+            Write-Host "Failed tests:"; Get-Content "$dir/LastTestsFailed.log"
+          }
+          if (Test-Path "$dir/LastTest.log") {
+            Select-String -Path "$dir/LastTest.log" -Pattern 'check failed|Test Failed|Exit code|Exception|FAIL|\[sx\]|error' |
+              Select-Object -First 30 | ForEach-Object { $_.Line }
+          }

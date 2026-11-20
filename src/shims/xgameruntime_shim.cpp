@@ -24,10 +24,20 @@
 #endif
 
 #include "scarlettx/kernel/xruntime.h"
+#include "xgr_api_tables.h"
+#include "xgr_task_queue.h"
 
 namespace fs = std::filesystem;
 
 namespace {
+
+bool TraceEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("SCARLETTX_TRACE");
+        return v && v[0] != '\0' && v[0] != '0';
+    }();
+    return enabled;
+}
 
 // ---------------------------------------------------------------------------
 // Global handle registry (for XSystemIsHandleValid)
@@ -78,289 +88,21 @@ XGameResult CopyStringToBuffer(const std::string& src,
 }
 
 // ---------------------------------------------------------------------------
-// XTaskQueue implementation
+// Async helpers for HLE-implemented operations (engine: xgr_task_queue.cpp)
 // ---------------------------------------------------------------------------
-struct TaskItem {
-    XTaskQueueCallback* callback = nullptr;
-    void* context = nullptr;
-    std::chrono::steady_clock::time_point ready_at;
-};
+using XAsyncState = xgr::HleAsyncState;
 
-struct MonitorEntry {
-    uint64_t token = 0;
-    XTaskQueueMonitorCallback* callback = nullptr;
-    void* context = nullptr;
-};
-
-struct TaskPortState {
-    XTaskQueueDispatchMode mode = XTaskQueueDispatchMode_Manual;
-    std::deque<TaskItem> items;
-    std::thread worker;
-    bool has_worker = false;
-};
-
-}  // namespace
-
-struct XTaskQueueObject {
-    std::atomic<int32_t> ref_count{1};
-    std::mutex mutex;
-    std::condition_variable cv;
-    TaskPortState ports[2];
-    bool terminating = false;
-    bool terminated = false;
-    std::vector<MonitorEntry> monitors;
-    uint64_t next_monitor_token = 1;
-    std::vector<std::pair<XTaskQueueTerminatedCallback*, void*>> terminated_callbacks;
-};
-
-namespace {
-
-void NotifyMonitors(XTaskQueueObject* q, XTaskQueuePort port) {
-    std::vector<MonitorEntry> snapshot;
-    {
-        std::lock_guard<std::mutex> lock(q->mutex);
-        snapshot = q->monitors;
-    }
-    for (const auto& m : snapshot) {
-        if (m.callback) {
-            m.callback(m.context, q, port);
-        }
-    }
-}
-
-bool PopReadyItemLocked(TaskPortState& port_state,
-                        TaskItem& out_item,
-                        std::chrono::steady_clock::time_point& out_next_ready) {
-    const auto now = std::chrono::steady_clock::now();
-    bool has_delayed = false;
-    for (auto it = port_state.items.begin(); it != port_state.items.end(); ++it) {
-        if (it->ready_at <= now) {
-            out_item = *it;
-            port_state.items.erase(it);
-            return true;
-        }
-        if (!has_delayed || it->ready_at < out_next_ready) {
-            out_next_ready = it->ready_at;
-            has_delayed = true;
-        }
-    }
-    return false;
-}
-
-void PortWorkerLoop(XTaskQueueObject* q, XTaskQueuePort port) {
-    const size_t idx = static_cast<size_t>(port);
-    for (;;) {
-        TaskItem item;
-        bool has_item = false;
-        bool canceled = false;
-        {
-            std::unique_lock<std::mutex> lock(q->mutex);
-            for (;;) {
-                std::chrono::steady_clock::time_point next_ready;
-                if (PopReadyItemLocked(q->ports[idx], item, next_ready)) {
-                    has_item = true;
-                    canceled = q->terminating;
-                    break;
-                }
-                if (q->terminating) {
-                    if (!q->ports[idx].items.empty()) {
-                        item = q->ports[idx].items.front();
-                        q->ports[idx].items.pop_front();
-                        has_item = true;
-                        canceled = true;
-                        break;
-                    }
-                    return;
-                }
-                if (!q->ports[idx].items.empty()) {
-                    q->cv.wait_until(lock, next_ready);
-                } else {
-                    q->cv.wait(lock);
-                }
-            }
-        }
-        if (has_item && item.callback) {
-            item.callback(item.context, canceled);
-        }
-    }
-}
-
-void StartPortWorkerIfNeeded(XTaskQueueObject* q, XTaskQueuePort port) {
-    const size_t idx = static_cast<size_t>(port);
-    auto mode = q->ports[idx].mode;
-    if (mode == XTaskQueueDispatchMode_ThreadPool ||
-        mode == XTaskQueueDispatchMode_SerializedThreadPool) {
-        q->ports[idx].has_worker = true;
-        q->ports[idx].worker = std::thread(PortWorkerLoop, q, port);
-    }
-}
-
-void TerminateQueueInternal(XTaskQueueObject* q, bool wait) {
-    std::vector<TaskItem> canceled_manual_items;
-    std::vector<std::pair<XTaskQueueTerminatedCallback*, void*>> term_cbs;
-    {
-        std::lock_guard<std::mutex> lock(q->mutex);
-        q->terminating = true;
-        for (int i = 0; i < 2; ++i) {
-            if (!q->ports[i].has_worker) {
-                while (!q->ports[i].items.empty()) {
-                    canceled_manual_items.push_back(q->ports[i].items.front());
-                    q->ports[i].items.pop_front();
-                }
-            }
-        }
-    }
-    q->cv.notify_all();
-
-    for (const auto& item : canceled_manual_items) {
-        if (item.callback) {
-            item.callback(item.context, true);
-        }
-    }
-
-    if (wait) {
-        for (int i = 0; i < 2; ++i) {
-            if (q->ports[i].has_worker && q->ports[i].worker.joinable()) {
-                if (q->ports[i].worker.get_id() != std::this_thread::get_id()) {
-                    q->ports[i].worker.join();
-                } else {
-                    q->ports[i].worker.detach();
-                }
-                q->ports[i].has_worker = false;
-            }
-        }
-        {
-            std::lock_guard<std::mutex> lock(q->mutex);
-            q->terminated = true;
-            term_cbs.swap(q->terminated_callbacks);
-        }
-        for (const auto& cb : term_cbs) {
-            if (cb.first) {
-                cb.first(cb.second);
-            }
-        }
-    }
-}
-
-std::mutex g_process_queue_mutex;
-XTaskQueueHandle g_process_queue = nullptr;
-
-XTaskQueueHandle EnsureDefaultProcessQueue() {
-    std::lock_guard<std::mutex> lock(g_process_queue_mutex);
-    if (!g_process_queue) {
-        XTaskQueueHandle created = nullptr;
-        if (XTaskQueueCreate(XTaskQueueDispatchMode_ThreadPool,
-                             XTaskQueueDispatchMode_ThreadPool,
-                             &created) == XGR_S_OK) {
-            g_process_queue = created;
-        }
-    }
-    return g_process_queue;
-}
-
-// ---------------------------------------------------------------------------
-// XAsync internal state stored in XAsyncBlock::internal
-// ---------------------------------------------------------------------------
-struct XAsyncState {
-    std::mutex mutex;
-    std::condition_variable cv;
-    XGameResult status = XGR_E_PENDING;
-    bool completed = false;
-    bool canceled = false;
-    size_t result_size = 0;
-    std::vector<uint8_t> result_payload;
-    void* result_handle = nullptr;
-    XAsyncBlock* block = nullptr;
-    XTaskQueueHandle queue = nullptr;
-    std::function<void(XAsyncState*)> work_fn;
-};
-
-// Map XAsyncBlock* -> shared_ptr<XAsyncState> for safe lifetime management.
-std::mutex g_async_map_mutex;
-std::unordered_map<XAsyncBlock*, std::shared_ptr<XAsyncState>> g_async_states;
-
-std::shared_ptr<XAsyncState> GetAsyncState(XAsyncBlock* block) {
-    if (!block) {
-        return nullptr;
-    }
-    std::lock_guard<std::mutex> lock(g_async_map_mutex);
-    auto it = g_async_states.find(block);
-    return it != g_async_states.end() ? it->second : nullptr;
-}
-
-void SCARLETTX_GDK_CALLBACK AsyncCompletionTrampoline(void* context, bool /*canceled*/) {
-    auto* raw_state = static_cast<XAsyncState*>(context);
-    if (!raw_state) {
-        return;
-    }
-    XAsyncBlock* block = raw_state->block;
-    XAsyncCompletionRoutine* cb = block ? block->callback : nullptr;
-    if (cb) {
-        cb(block);
-    }
-}
-
-void SCARLETTX_GDK_CALLBACK AsyncWorkTrampoline(void* context, bool canceled) {
-    auto* state = static_cast<XAsyncState*>(context);
-    if (!state) {
-        return;
-    }
-    if (canceled) {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        if (!state->completed) {
-            state->canceled = true;
-            state->status = XGR_E_ABORT;
-            state->completed = true;
-        }
-        state->cv.notify_all();
-    } else if (state->work_fn) {
-        state->work_fn(state);
-    }
-
-    if (state->block && state->block->callback && state->queue) {
-        XTaskQueueSubmitCallback(
-            state->queue,
-            XTaskQueuePort_Completion,
-            state,
-            AsyncCompletionTrampoline);
-    }
-}
-
-std::shared_ptr<XAsyncState> BeginAsyncOperation(
-    XAsyncBlock* async,
-    std::function<void(XAsyncState*)> work_fn) {
-    auto state = std::make_shared<XAsyncState>();
-    state->block = async;
-    state->work_fn = std::move(work_fn);
-
-    XTaskQueueHandle q = async->queue;
-    if (!q) {
-        q = EnsureDefaultProcessQueue();
-    }
-    state->queue = q;
-
-    // Store raw pointer marker in internal buffer for ABI inspection.
-    std::memset(async->internal, 0, sizeof(async->internal));
-    XAsyncState* raw = state.get();
-    std::memcpy(async->internal, &raw, sizeof(raw));
-
-    {
-        std::lock_guard<std::mutex> lock(g_async_map_mutex);
-        g_async_states[async] = state;
-    }
-
-    XTaskQueueSubmitCallback(q, XTaskQueuePort_Work, raw, AsyncWorkTrampoline);
-    return state;
+XGameResult BeginAsyncOperation(XAsyncBlock* async,
+                                std::function<void(XAsyncState*)> work_fn) {
+    return xgr::BeginHleAsync(async, std::move(work_fn));
 }
 
 void CompleteAsyncState(XAsyncState* state, XGameResult hr, size_t result_size = 0) {
-    std::lock_guard<std::mutex> lock(state->mutex);
-    if (!state->completed) {
-        state->status = state->canceled ? XGR_E_ABORT : hr;
-        state->result_size = result_size;
-        state->completed = true;
-    }
-    state->cv.notify_all();
+    xgr::CompleteHleAsync(state, hr, result_size);
+}
+
+std::shared_ptr<XAsyncState> GetAsyncState(XAsyncBlock* async) {
+    return xgr::GetHleAsyncState(async);
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +199,8 @@ thread_local bool g_thread_time_sensitive = false;
 
 }  // namespace
 
+std::string scarlettx::xgr::StoredSaveName(const std::string& name) { return SanitizeSaveName(name); }
+
 extern "C" {
 
 // ===========================================================================
@@ -468,7 +212,7 @@ XGameResult XGameRuntimeInitialize() {
     if (!st.ok()) {
         return XGR_E_FAIL;
     }
-    EnsureDefaultProcessQueue();
+    xgr::EnsureProcessTaskQueue();
     return XGR_S_OK;
 }
 
@@ -477,19 +221,7 @@ XGameResult XGameRuntimeInitializeWithOptions(const XGameRuntimeOptions* /*optio
 }
 
 void XGameRuntimeUninitialize() {
-    {
-        std::lock_guard<std::mutex> lock(g_process_queue_mutex);
-        if (g_process_queue) {
-            XTaskQueueHandle q = g_process_queue;
-            g_process_queue = nullptr;
-            XTaskQueueTerminate(q, true, nullptr, nullptr);
-            XTaskQueueCloseHandle(q);
-        }
-    }
-    {
-        std::lock_guard<std::mutex> lock(g_async_map_mutex);
-        g_async_states.clear();
-    }
+    xgr::ShutdownTaskSystem();
     scarlettx::XGameRuntimeHle::Instance().Shutdown();
 }
 
@@ -511,298 +243,6 @@ XGameResult XGameRuntimeIsFeatureAvailable(XGameRuntimeFeature feature, bool* is
             *isAvailable = false;
             return XGR_S_OK;
     }
-}
-
-// ===========================================================================
-// XTaskQueue.h
-// ===========================================================================
-XGameResult XTaskQueueCreate(
-    XTaskQueueDispatchMode workDispatchMode,
-    XTaskQueueDispatchMode completionDispatchMode,
-    XTaskQueueHandle* queue) {
-    if (!queue) {
-        return XGR_E_POINTER;
-    }
-    auto* obj = new (std::nothrow) XTaskQueueObject();
-    if (!obj) {
-        return XGR_E_OUTOFMEMORY;
-    }
-    obj->ports[0].mode = workDispatchMode;
-    obj->ports[1].mode = completionDispatchMode;
-    StartPortWorkerIfNeeded(obj, XTaskQueuePort_Work);
-    StartPortWorkerIfNeeded(obj, XTaskQueuePort_Completion);
-    RegisterValidHandle(obj);
-    *queue = obj;
-    return XGR_S_OK;
-}
-
-XGameResult XTaskQueueDuplicateHandle(
-    XTaskQueueHandle queueHandle,
-    XTaskQueueHandle* duplicatedHandle) {
-    if (!queueHandle || !duplicatedHandle) {
-        return XGR_E_INVALIDARG;
-    }
-    queueHandle->ref_count.fetch_add(1, std::memory_order_relaxed);
-    *duplicatedHandle = queueHandle;
-    return XGR_S_OK;
-}
-
-void XTaskQueueCloseHandle(XTaskQueueHandle queue) {
-    if (!queue) {
-        return;
-    }
-    if (queue->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        TerminateQueueInternal(queue, true);
-        UnregisterValidHandle(queue);
-        delete queue;
-    }
-}
-
-XGameResult XTaskQueueSubmitDelayedCallback(
-    XTaskQueueHandle queue,
-    XTaskQueuePort port,
-    uint32_t delayMs,
-    void* callbackContext,
-    XTaskQueueCallback* callback) {
-    if (!queue || !callback) {
-        return XGR_E_INVALIDARG;
-    }
-    const size_t idx = static_cast<size_t>(port);
-    if (idx > 1) {
-        return XGR_E_INVALIDARG;
-    }
-
-    if (queue->ports[idx].mode == XTaskQueueDispatchMode_Immediate && delayMs == 0) {
-        bool canceled = false;
-        {
-            std::lock_guard<std::mutex> lock(queue->mutex);
-            canceled = queue->terminating;
-        }
-        callback(callbackContext, canceled);
-        return XGR_S_OK;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(queue->mutex);
-        if (queue->terminating) {
-            return XGR_E_ABORT;
-        }
-        TaskItem item;
-        item.callback = callback;
-        item.context = callbackContext;
-        item.ready_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
-        queue->ports[idx].items.push_back(item);
-    }
-    queue->cv.notify_all();
-    NotifyMonitors(queue, port);
-    return XGR_S_OK;
-}
-
-XGameResult XTaskQueueSubmitCallback(
-    XTaskQueueHandle queue,
-    XTaskQueuePort port,
-    void* callbackContext,
-    XTaskQueueCallback* callback) {
-    return XTaskQueueSubmitDelayedCallback(queue, port, 0, callbackContext, callback);
-}
-
-bool XTaskQueueDispatch(
-    XTaskQueueHandle queue,
-    XTaskQueuePort port,
-    uint32_t timeoutInMs) {
-    if (!queue) {
-        return false;
-    }
-    const size_t idx = static_cast<size_t>(port);
-    if (idx > 1) {
-        return false;
-    }
-
-    const auto deadline =
-        (timeoutInMs == 0xFFFFFFFFu)
-            ? std::chrono::steady_clock::time_point::max()
-            : (std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutInMs));
-
-    TaskItem item;
-    bool canceled = false;
-    {
-        std::unique_lock<std::mutex> lock(queue->mutex);
-        for (;;) {
-            std::chrono::steady_clock::time_point next_ready;
-            if (PopReadyItemLocked(queue->ports[idx], item, next_ready)) {
-                canceled = queue->terminating;
-                break;
-            }
-            if (queue->terminating) {
-                return false;
-            }
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= deadline) {
-                return false;
-            }
-            auto wait_until = deadline;
-            if (!queue->ports[idx].items.empty() && next_ready < wait_until) {
-                wait_until = next_ready;
-            }
-            if (wait_until == std::chrono::steady_clock::time_point::max()) {
-                queue->cv.wait(lock);
-            } else {
-                queue->cv.wait_until(lock, wait_until);
-            }
-        }
-    }
-
-    if (item.callback) {
-        item.callback(item.context, canceled);
-    }
-    return true;
-}
-
-XGameResult XTaskQueueTerminate(
-    XTaskQueueHandle queue,
-    bool wait,
-    void* callbackContext,
-    XTaskQueueTerminatedCallback* callback) {
-    if (!queue) {
-        return XGR_E_INVALIDARG;
-    }
-    if (callback) {
-        std::lock_guard<std::mutex> lock(queue->mutex);
-        queue->terminated_callbacks.emplace_back(callback, callbackContext);
-    }
-    TerminateQueueInternal(queue, wait);
-    if (!wait && callback) {
-        // If not waiting, invoke callback once workers are signaled if none exist.
-        bool any_worker = false;
-        {
-            std::lock_guard<std::mutex> lock(queue->mutex);
-            any_worker = queue->ports[0].has_worker || queue->ports[1].has_worker;
-        }
-        if (!any_worker) {
-            std::vector<std::pair<XTaskQueueTerminatedCallback*, void*>> cbs;
-            {
-                std::lock_guard<std::mutex> lock(queue->mutex);
-                cbs.swap(queue->terminated_callbacks);
-            }
-            for (const auto& cb : cbs) {
-                if (cb.first) {
-                    cb.first(cb.second);
-                }
-            }
-        }
-    }
-    return XGR_S_OK;
-}
-
-XGameResult XTaskQueueGetCurrentProcessTaskQueue(XTaskQueueHandle* queue) {
-    if (!queue) {
-        return XGR_E_POINTER;
-    }
-    XTaskQueueHandle q = EnsureDefaultProcessQueue();
-    if (!q) {
-        *queue = nullptr;
-        return XGR_E_FAIL;
-    }
-    return XTaskQueueDuplicateHandle(q, queue);
-}
-
-void XTaskQueueSetCurrentProcessTaskQueue(XTaskQueueHandle queue) {
-    XTaskQueueHandle old_q = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_process_queue_mutex);
-        old_q = g_process_queue;
-        g_process_queue = nullptr;
-        if (queue) {
-            XTaskQueueDuplicateHandle(queue, &g_process_queue);
-        }
-    }
-    if (old_q) {
-        XTaskQueueCloseHandle(old_q);
-    }
-}
-
-XGameResult XTaskQueueRegisterMonitor(
-    XTaskQueueHandle queue,
-    void* callbackContext,
-    XTaskQueueMonitorCallback* callback,
-    XTaskQueueRegistrationToken* token) {
-    if (!queue || !callback || !token) {
-        return XGR_E_INVALIDARG;
-    }
-    std::lock_guard<std::mutex> lock(queue->mutex);
-    const uint64_t id = queue->next_monitor_token++;
-    queue->monitors.push_back(MonitorEntry{id, callback, callbackContext});
-    token->token = id;
-    return XGR_S_OK;
-}
-
-void XTaskQueueUnregisterMonitor(
-    XTaskQueueHandle queue,
-    XTaskQueueRegistrationToken token) {
-    if (!queue) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(queue->mutex);
-    queue->monitors.erase(
-        std::remove_if(queue->monitors.begin(), queue->monitors.end(),
-                       [&](const MonitorEntry& e) { return e.token == token.token; }),
-        queue->monitors.end());
-}
-
-// ===========================================================================
-// XAsync.h
-// ===========================================================================
-XGameResult XAsyncGetStatus(XAsyncBlock* asyncBlock, bool wait) {
-    auto state = GetAsyncState(asyncBlock);
-    if (!state) {
-        return XGR_E_INVALIDARG;
-    }
-    std::unique_lock<std::mutex> lock(state->mutex);
-    if (wait && !state->completed) {
-        state->cv.wait(lock, [&]() { return state->completed; });
-    }
-    return state->status;
-}
-
-XGameResult XAsyncGetResultSize(XAsyncBlock* asyncBlock, size_t* bufferSize) {
-    if (!bufferSize) {
-        return XGR_E_POINTER;
-    }
-    auto state = GetAsyncState(asyncBlock);
-    if (!state) {
-        return XGR_E_INVALIDARG;
-    }
-    std::lock_guard<std::mutex> lock(state->mutex);
-    if (!state->completed) {
-        return XGR_E_PENDING;
-    }
-    *bufferSize = state->result_size;
-    return state->status;
-}
-
-void XAsyncCancel(XAsyncBlock* asyncBlock) {
-    auto state = GetAsyncState(asyncBlock);
-    if (!state) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(state->mutex);
-    if (!state->completed) {
-        state->canceled = true;
-        state->status = XGR_E_ABORT;
-        state->completed = true;
-        state->cv.notify_all();
-    }
-}
-
-XGameResult XAsyncRun(XAsyncBlock* asyncBlock, XAsyncWork* work) {
-    if (!asyncBlock || !work) {
-        return XGR_E_INVALIDARG;
-    }
-    BeginAsyncOperation(asyncBlock, [asyncBlock, work](XAsyncState* st) {
-        XGameResult hr = work(asyncBlock);
-        CompleteAsyncState(st, hr, 0);
-    });
-    return XGR_S_OK;
 }
 
 // ===========================================================================
@@ -868,7 +308,7 @@ XGameResult XSystemGetXboxLiveSandboxId(
 }
 
 bool XSystemIsHandleValid(void* handle) {
-    return IsRegisteredHandle(handle);
+    return IsRegisteredHandle(handle) || xgr::IsTaskQueueHandle(handle);
 }
 
 // ===========================================================================
@@ -878,7 +318,7 @@ XGameResult XUserAddAsync(XUserAddOptions /*options*/, XAsyncBlock* async) {
     if (!async) {
         return XGR_E_INVALIDARG;
     }
-    BeginAsyncOperation(async, [](XAsyncState* st) {
+    return BeginAsyncOperation(async, [](XAsyncState* st) {
         auto* user = new (std::nothrow) XUser();
         if (!user) {
             CompleteAsyncState(st, XGR_E_OUTOFMEMORY, 0);
@@ -893,7 +333,6 @@ XGameResult XUserAddAsync(XUserAddOptions /*options*/, XAsyncBlock* async) {
         st->result_handle = user;
         CompleteAsyncState(st, XGR_S_OK, sizeof(XUserHandle));
     });
-    return XGR_S_OK;
 }
 
 XGameResult XUserAddResult(XAsyncBlock* async, XUserHandle* newUser) {
@@ -911,6 +350,7 @@ XGameResult XUserAddResult(XAsyncBlock* async, XUserHandle* newUser) {
         return XGR_E_FAIL;
     }
     *newUser = static_cast<XUserHandle>(state->result_handle);
+    xgr::ReleaseHleAsyncResult(async);
     return XGR_S_OK;
 }
 
@@ -1075,14 +515,13 @@ XGameResult XGameSaveInitializeProviderAsync(
         return XGR_E_INVALIDARG;
     }
     std::string cfg = configurationId;
-    BeginAsyncOperation(async, [requestingUser, cfg, syncOnDemand](XAsyncState* st) {
+    return BeginAsyncOperation(async, [requestingUser, cfg, syncOnDemand](XAsyncState* st) {
         XGameSaveProviderHandle prov = nullptr;
         XGameResult hr = XGameSaveInitializeProvider(
             requestingUser, cfg.c_str(), syncOnDemand, &prov);
         st->result_handle = prov;
         CompleteAsyncState(st, hr, sizeof(XGameSaveProviderHandle));
     });
-    return XGR_S_OK;
 }
 
 XGameResult XGameSaveInitializeProviderResult(
@@ -1102,6 +541,7 @@ XGameResult XGameSaveInitializeProviderResult(
         return XGR_E_FAIL;
     }
     *provider = static_cast<XGameSaveProviderHandle>(state->result_handle);
+    xgr::ReleaseHleAsyncResult(async);
     return XGR_S_OK;
 }
 
@@ -1303,11 +743,10 @@ XGameResult XGameSaveSubmitUpdateAsync(
     if (!updateContext || !async) {
         return XGR_E_INVALIDARG;
     }
-    BeginAsyncOperation(async, [updateContext](XAsyncState* st) {
+    return BeginAsyncOperation(async, [updateContext](XAsyncState* st) {
         XGameResult hr = XGameSaveSubmitUpdate(updateContext);
         CompleteAsyncState(st, hr, 0);
     });
-    return XGR_S_OK;
 }
 
 XGameResult XGameSaveSubmitUpdateResult(XAsyncBlock* async) {
@@ -1395,7 +834,7 @@ XGameResult XGameSaveReadBlobDataAsync(
         names.emplace_back(blobNames[i]);
     }
 
-    BeginAsyncOperation(async, [container, names = std::move(names)](XAsyncState* st) {
+    return BeginAsyncOperation(async, [container, names = std::move(names)](XAsyncState* st) {
         auto* provider = container->provider;
         std::lock_guard<std::mutex> lock(provider->mutex);
 
@@ -1443,7 +882,6 @@ XGameResult XGameSaveReadBlobDataAsync(
         st->result_payload = std::move(packed);
         CompleteAsyncState(st, XGR_S_OK, required_gdk_size);
     });
-    return XGR_S_OK;
 }
 
 XGameResult XGameSaveReadBlobDataResult(
@@ -1503,6 +941,7 @@ XGameResult XGameSaveReadBlobDataResult(
     }
 
     *countOfBlobs = cnt;
+    xgr::ReleaseHleAsyncResult(async);
     return XGR_S_OK;
 }
 
@@ -1725,20 +1164,26 @@ bool GuidEquals(const void* a_ptr, const XgrGuid& b) {
 constexpr XgrGuid kIidIUnknown = {
     0x00000000u, 0x0000u, 0x0000u, {0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
 
-// Observed GDK ApiImpl GUID from real Scarlett target disassembly:
-//   {073B7DCB-1FCF-4030-94BE-E3C9EB623428}
-// Official Microsoft interface name is not asserted; vtable offsets and
-// Windows x64 register ABIs below are derived from target call sites and
-// verified against live startup execution (allocates handle at +0x60,
-// polls at +0x80, releases handle at +0x88, releases COM wrapper at +0x10):
-//   +0x00 (slot  0): QueryInterface (this, riid, ppv) -> HRESULT
-//   +0x08 (slot  1): AddRef (this) -> uint32_t
-//   +0x10 (slot  2): Release (this) -> uint32_t
-//   +0x30 (slot  6): (this, arg1, arg2) -> HRESULT (delegates to XAsyncRun)
-//   +0x60 (slot 12): (this, u32, u32, out_handle*) -> HRESULT (delegates to XTaskQueueCreate)
-//   +0x80 (slot 16): (this, handle, u32, u32) -> bool/u8 (delegates to XTaskQueueDispatch)
-//   +0x88 (slot 17): (this, handle) -> void (delegates to XTaskQueueCloseHandle)
-//   +0xE8 (slot 29): (this) -> void (caller ignores result; safe no-op)
+// ApiImpl GUID {073B7DCB-1FCF-4030-94BE-E3C9EB623428}.
+// Microsoft's interface name for this table is not asserted. The slot map below
+// comes from the system xgameruntime.dll of the target package: its table has 32
+// entries, and each of slots 3-30 is a thunk that drops `this` and tail-calls a
+// flat function. A slot is given a public-header name only where the forwarded
+// argument list matches that declaration and its position follows the order of
+// XAsync.h, XAsyncProvider.h, XTaskQueue.h and XThread.h; the title's own call
+// sites confirm slots 6, 12, 16, 17 and 29.
+//    3 XAsyncGetStatus            4 XAsyncGetResultSize         5 XAsyncCancel
+//    6 XAsyncRun                  7 XAsyncBegin                 8 (unidentified)
+//    9 XAsyncSchedule            10 XAsyncComplete             11 XAsyncGetResult
+//   12 XTaskQueueCreate          13 XTaskQueueCreateComposite  14 XTaskQueueGetPort
+//   15 XTaskQueueDuplicateHandle 16 XTaskQueueDispatch         17 XTaskQueueCloseHandle
+//   18 XTaskQueueSubmitCallback  19 XTaskQueueSubmitDelayedCallback
+//   20 XTaskQueueRegisterWaiter  21 XTaskQueueUnregisterWaiter 22 XTaskQueueTerminate
+//   23 XTaskQueueRegisterMonitor 24 XTaskQueueUnregisterMonitor
+//   25 XTaskQueueGetCurrentProcessTaskQueue  26 XTaskQueueSetCurrentProcessTaskQueue
+//   27 XThreadSetTimeSensitive   28 XThreadIsTimeSensitive     29 XThreadAssertNotTimeSensitive
+//   30 (unidentified, no arguments)          31 (not a guest-callable method)
+// Unidentified slots log the call and return E_NOTIMPL.
 constexpr XgrGuid kGuidApiImpl073B7DCB = {
     0x073B7DCBu, 0x1FCFu, 0x4030u, {0x94, 0xBE, 0xE3, 0xC9, 0xEB, 0x62, 0x34, 0x28}};
 
@@ -1791,57 +1236,50 @@ uint32_t SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Release(void* self_ptr) {
     return remaining;
 }
 
-XGameResult SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Slot06(
-    void* /*self_ptr*/,
-    XAsyncBlock* asyncBlock,
-    XAsyncWork* work) {
-    std::fprintf(stderr,
-                 "[ScarlettX][xgameruntime] ApiImpl{073B7DCB}::+0x30(async=%p, work=%p)\n",
-                 static_cast<void*>(asyncBlock),
-                 reinterpret_cast<void*>(work));
-    std::fflush(stderr);
-    return XAsyncRun(asyncBlock, work);
-}
+// The slots below ignore `this` and forward to the flat implementation, as the
+// real table does. `S` is the slot's flat signature without the leading `this`.
+template <typename R, typename... A>
+struct ApiImplForward {
+    template <R (*Fn)(A...)>
+    static R SCARLETTX_GDK_CALLBACK Call(void* /*self*/, A... args) {
+        return Fn(args...);
+    }
+};
 
-XGameResult SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Slot12(
-    void* /*self_ptr*/,
-    uint32_t workDispatchMode,
-    uint32_t completionDispatchMode,
-    XTaskQueueHandle* outQueue) {
-    const XGameResult hr = XTaskQueueCreate(
-        static_cast<XTaskQueueDispatchMode>(workDispatchMode),
-        static_cast<XTaskQueueDispatchMode>(completionDispatchMode),
-        outQueue);
-    std::fprintf(stderr,
-                 "[ScarlettX][xgameruntime] ApiImpl{073B7DCB}::+0x60(work=%u, comp=%u) -> 0x%08X (q=%p)\n",
-                 workDispatchMode,
-                 completionDispatchMode,
-                 static_cast<unsigned>(hr),
-                 outQueue ? static_cast<void*>(*outQueue) : nullptr);
-    std::fflush(stderr);
-    return hr;
-}
+#define XGR_FORWARD(ret, fn, ...) \
+    reinterpret_cast<void*>(&ApiImplForward<ret, ##__VA_ARGS__>::template Call<&fn>)
 
-bool SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Slot16(
-    void* /*self_ptr*/,
-    XTaskQueueHandle queue,
-    uint32_t port,
-    uint32_t timeoutInMs) {
-    return XTaskQueueDispatch(queue, static_cast<XTaskQueuePort>(port), timeoutInMs);
+XGameResult Slot12_TaskQueueCreate(uint32_t work_mode, uint32_t completion_mode,
+                                   XTaskQueueHandle* queue) {
+    return XTaskQueueCreate(static_cast<XTaskQueueDispatchMode>(work_mode),
+                            static_cast<XTaskQueueDispatchMode>(completion_mode), queue);
 }
-
-void SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Slot17(
-    void* /*self_ptr*/,
-    XTaskQueueHandle queue) {
-    std::fprintf(stderr,
-                 "[ScarlettX][xgameruntime] ApiImpl{073B7DCB}::+0x88(q=%p)\n",
-                 static_cast<void*>(queue));
-    std::fflush(stderr);
-    XTaskQueueCloseHandle(queue);
+XGameResult Slot14_GetPort(XTaskQueueHandle queue, uint32_t port, XTaskQueuePortHandle* out) {
+    return XTaskQueueGetPort(queue, static_cast<XTaskQueuePort>(port), out);
 }
-
-void SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_Slot29(void* /*self_ptr*/) {
-    // Observed no-arg call whose return value is ignored by the caller.
+bool Slot16_Dispatch(XTaskQueueHandle queue, uint32_t port, uint32_t timeout_ms) {
+    return XTaskQueueDispatch(queue, static_cast<XTaskQueuePort>(port), timeout_ms);
+}
+XGameResult Slot18_Submit(XTaskQueueHandle queue, uint32_t port, void* context,
+                          XTaskQueueCallback* callback) {
+    return XTaskQueueSubmitCallback(queue, static_cast<XTaskQueuePort>(port), context, callback);
+}
+XGameResult Slot19_SubmitDelayed(XTaskQueueHandle queue, uint32_t port, uint32_t delay_ms,
+                                 void* context, XTaskQueueCallback* callback) {
+    return XTaskQueueSubmitDelayedCallback(queue, static_cast<XTaskQueuePort>(port), delay_ms,
+                                           context, callback);
+}
+XGameResult Slot20_RegisterWaiter(XTaskQueueHandle queue, uint32_t port, void* wait_handle,
+                                  void* context, XTaskQueueCallback* callback,
+                                  XTaskQueueRegistrationToken* token) {
+    return XTaskQueueRegisterWaiter(queue, static_cast<XTaskQueuePort>(port), wait_handle,
+                                    context, callback, token);
+}
+void Slot21_UnregisterWaiter(XTaskQueueHandle queue, uint64_t token) {
+    XTaskQueueUnregisterWaiter(queue, XTaskQueueRegistrationToken{token});
+}
+void Slot24_UnregisterMonitor(XTaskQueueHandle queue, uint64_t token) {
+    XTaskQueueUnregisterMonitor(queue, XTaskQueueRegistrationToken{token});
 }
 
 template <uint32_t SlotIndex>
@@ -1855,38 +1293,49 @@ XGameResult SCARLETTX_GDK_CALLBACK ApiImpl073B7DCB_UnimplementedSlot(void* /*sel
 }
 
 const XgrApiImpl073B7DCBVtable kApiImpl073B7DCBVtable = {{
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_QueryInterface),        // 0  (+0x00)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_AddRef),                // 1  (+0x08)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_Release),               // 2  (+0x10)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<3>),  // 3  (+0x18)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<4>),  // 4  (+0x20)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<5>),  // 5  (+0x28)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_Slot06),                // 6  (+0x30)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<7>),  // 7  (+0x38)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<8>),  // 8  (+0x40)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<9>),  // 9  (+0x48)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<10>), // 10 (+0x50)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<11>), // 11 (+0x58)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_Slot12),                // 12 (+0x60)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<13>), // 13 (+0x68)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<14>), // 14 (+0x70)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<15>), // 15 (+0x78)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_Slot16),                // 16 (+0x80)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_Slot17),                // 17 (+0x88)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<18>), // 18 (+0x90)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<19>), // 19 (+0x98)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<20>), // 20 (+0xA0)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<21>), // 21 (+0xA8)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<22>), // 22 (+0xB0)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<23>), // 23 (+0xB8)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<24>), // 24 (+0xC0)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<25>), // 25 (+0xC8)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<26>), // 26 (+0xD0)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<27>), // 27 (+0xD8)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<28>), // 28 (+0xE0)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_Slot29),                // 29 (+0xE8)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<30>), // 30 (+0xF0)
-    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<31>), // 31 (+0xF8)
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_QueryInterface),                             // 0
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_AddRef),                                     // 1
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_Release),                                    // 2
+    XGR_FORWARD(XGameResult, XAsyncGetStatus, XAsyncBlock*, bool),                        // 3
+    XGR_FORWARD(XGameResult, XAsyncGetResultSize, XAsyncBlock*, size_t*),                 // 4
+    XGR_FORWARD(void, XAsyncCancel, XAsyncBlock*),                                        // 5
+    XGR_FORWARD(XGameResult, XAsyncRun, XAsyncBlock*, XAsyncWork*),                       // 6
+    XGR_FORWARD(XGameResult, XAsyncBegin, XAsyncBlock*, void*, const void*, const char*,
+                XAsyncProvider*),                                                         // 7
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<8>),                       // 8
+    XGR_FORWARD(XGameResult, XAsyncSchedule, XAsyncBlock*, uint32_t),                     // 9
+    XGR_FORWARD(void, XAsyncComplete, XAsyncBlock*, XGameResult, size_t),                 // 10
+    XGR_FORWARD(XGameResult, XAsyncGetResult, XAsyncBlock*, const void*, size_t, void*,
+                size_t*),                                                                 // 11
+    XGR_FORWARD(XGameResult, Slot12_TaskQueueCreate, uint32_t, uint32_t,
+                XTaskQueueHandle*),                                                       // 12
+    XGR_FORWARD(XGameResult, XTaskQueueCreateComposite, XTaskQueuePortHandle,
+                XTaskQueuePortHandle, XTaskQueueHandle*),                                 // 13
+    XGR_FORWARD(XGameResult, Slot14_GetPort, XTaskQueueHandle, uint32_t,
+                XTaskQueuePortHandle*),                                                   // 14
+    XGR_FORWARD(XGameResult, XTaskQueueDuplicateHandle, XTaskQueueHandle,
+                XTaskQueueHandle*),                                                       // 15
+    XGR_FORWARD(bool, Slot16_Dispatch, XTaskQueueHandle, uint32_t, uint32_t),             // 16
+    XGR_FORWARD(void, XTaskQueueCloseHandle, XTaskQueueHandle),                           // 17
+    XGR_FORWARD(XGameResult, Slot18_Submit, XTaskQueueHandle, uint32_t, void*,
+                XTaskQueueCallback*),                                                     // 18
+    XGR_FORWARD(XGameResult, Slot19_SubmitDelayed, XTaskQueueHandle, uint32_t, uint32_t,
+                void*, XTaskQueueCallback*),                                              // 19
+    XGR_FORWARD(XGameResult, Slot20_RegisterWaiter, XTaskQueueHandle, uint32_t, void*,
+                void*, XTaskQueueCallback*, XTaskQueueRegistrationToken*),                // 20
+    XGR_FORWARD(void, Slot21_UnregisterWaiter, XTaskQueueHandle, uint64_t),               // 21
+    XGR_FORWARD(XGameResult, XTaskQueueTerminate, XTaskQueueHandle, bool, void*,
+                XTaskQueueTerminatedCallback*),                                           // 22
+    XGR_FORWARD(XGameResult, XTaskQueueRegisterMonitor, XTaskQueueHandle, void*,
+                XTaskQueueMonitorCallback*, XTaskQueueRegistrationToken*),                // 23
+    XGR_FORWARD(void, Slot24_UnregisterMonitor, XTaskQueueHandle, uint64_t),              // 24
+    XGR_FORWARD(bool, XTaskQueueGetCurrentProcessTaskQueue, XTaskQueueHandle*),           // 25
+    XGR_FORWARD(void, XTaskQueueSetCurrentProcessTaskQueue, XTaskQueueHandle),            // 26
+    XGR_FORWARD(XGameResult, XThreadSetTimeSensitive, bool),                              // 27
+    XGR_FORWARD(bool, XThreadIsTimeSensitive),                                            // 28
+    XGR_FORWARD(void, XThreadAssertNotTimeSensitive),                                     // 29
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<30>),                      // 30
+    reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<31>),                      // 31
 }};
 
 // Observed second GDK ApiImpl GUID from real Scarlett target disassembly:
@@ -2024,7 +1473,10 @@ XGameResult SCARLETTX_GDK_CALLBACK ApiImpl37E56907_Slot15(
     if (!out_state) {
         return XGR_E_POINTER;
     }
-    // Caller polls byte at offset +0x0c until non-zero (with 50ms Sleep).
+    // XNetworkingConnectivityHint is 16 bytes; the caller polls the byte at
+    // +0x0c (networkInitialized) until non-zero (with 50ms Sleep). The other
+    // fields are reported as unknown rather than left uninitialised.
+    std::memset(out_state, 0, 16);
     static_cast<uint8_t*>(out_state)[0x0c] = 1;
     std::fprintf(stderr,
                  "[ScarlettX][xgameruntime] ApiImpl{37E56907}::+0x78(out=%p) -> S_OK (byte+0x0c=1)\n",
@@ -2125,10 +1577,12 @@ XGameResult QueryApiImpl(const void* api_id, const void* riid, void** out_impl) 
         }
         impl->vtbl = &kApiImpl073B7DCBVtable;
         *out_impl = impl;
-        std::fprintf(stderr,
-                     "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> S_OK (%p)\n",
-                     api_str, iid_str, static_cast<void*>(impl));
-        std::fflush(stderr);
+        if (TraceEnabled()) {
+            std::fprintf(stderr,
+                         "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> S_OK (%p)\n",
+                         api_str, iid_str, static_cast<void*>(impl));
+            std::fflush(stderr);
+        }
         return XGR_S_OK;
     }
 
@@ -2140,17 +1594,32 @@ XGameResult QueryApiImpl(const void* api_id, const void* riid, void** out_impl) 
         }
         impl->vtbl = &kApiImpl37E56907Vtable;
         *out_impl = impl;
-        std::fprintf(stderr,
-                     "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> S_OK (%p)\n",
-                     api_str, iid_str, static_cast<void*>(impl));
-        std::fflush(stderr);
+        if (TraceEnabled()) {
+            std::fprintf(stderr,
+                         "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> S_OK (%p)\n",
+                         api_str, iid_str, static_cast<void*>(impl));
+            std::fflush(stderr);
+        }
         return XGR_S_OK;
     }
 
-    std::fprintf(stderr,
-                 "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> E_NOINTERFACE\n",
-                 api_str, iid_str);
-    std::fflush(stderr);
+    if (void* table = scarlettx::xgr::CreateApiTable(api_id, riid)) {
+        *out_impl = table;
+        if (TraceEnabled()) {
+            std::fprintf(stderr,
+                         "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> S_OK (%p)\n",
+                         api_str, iid_str, table);
+            std::fflush(stderr);
+        }
+        return XGR_S_OK;
+    }
+
+    if (TraceEnabled()) {
+        std::fprintf(stderr,
+                     "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> E_NOINTERFACE\n",
+                     api_str, iid_str);
+        std::fflush(stderr);
+    }
     return static_cast<XGameResult>(0x80004002u);
 }
 

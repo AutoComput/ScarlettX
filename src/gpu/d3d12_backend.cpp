@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 
 #if defined(_WIN32)
@@ -192,6 +193,25 @@ Status D3D12Backend::Initialize(bool prefer_warp, bool enable_debug_layer) {
     }
 
     if (!impl_->device) {
+        IDXGIAdapter1* preferred = nullptr;
+        IDXGIFactory6* factory6 = nullptr;
+        if (SUCCEEDED(impl_->factory->QueryInterface(IID_PPV_ARGS(&factory6))) && factory6) {
+            factory6->EnumAdapterByGpuPreference(
+                0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&preferred));
+            factory6->Release();
+        }
+        if (preferred) {
+            DXGI_ADAPTER_DESC1 desc{};
+            const bool is_sw = SUCCEEDED(preferred->GetDesc1(&desc)) &&
+                               (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+            if (!is_sw) {
+                try_create_device(preferred);
+            }
+            preferred->Release();
+        }
+    }
+
+    if (!impl_->device) {
         for (UINT idx = 0;; ++idx) {
             IDXGIAdapter1* hw = nullptr;
             if (impl_->factory->EnumAdapters1(idx, &hw) == DXGI_ERROR_NOT_FOUND) {
@@ -226,6 +246,9 @@ Status D3D12Backend::Initialize(bool prefer_warp, bool enable_debug_layer) {
         adapter_info_.is_warp = (adesc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
         adapter_info_.vendor_id = adesc.VendorId;
         adapter_info_.device_id = adesc.DeviceId;
+        std::cerr << "[ScarlettX][d3d12] Adapter: "
+                  << (adapter_info_.description.empty() ? "unknown" : adapter_info_.description)
+                  << (adapter_info_.is_warp ? " (WARP/software)" : " (hardware)") << "\n";
     }
 
     if (SUCCEEDED(impl_->device->QueryInterface(IID_PPV_ARGS(&impl_->device5))) && impl_->device5) {
