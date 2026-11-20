@@ -908,7 +908,7 @@ def main() -> None:
         ("milestones", f"{cd_impl}/{cd_target}", BADGE_FN, True),
         ("phase", "Phase 3: PresentX (white frames)", BADGE_EXPORTS, False),
         ("state", "Boots to PresentX", BADGE_TARGET, False),
-        ("target", "Indie Game (Gen9 Unity IL2CPP)", BADGE_TESTS, False),
+        ("target", "Indie Game (Gen9)", BADGE_TESTS, False),
     ]
     cd_svg = render_svg(
         cd_subsystems,
