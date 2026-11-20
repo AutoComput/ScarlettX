@@ -1,6 +1,8 @@
-#define SCARLETTX_BUILD_BVH
+#define SCARLETTX_BUILDING_XBOX_BVH 1
 #include "scarlettx/gpu/d3d12_xs_abi.h"
 
+#include <algorithm>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -10,8 +12,14 @@
 
 namespace {
 
+uint64_t AlignUp(uint64_t v, uint64_t align) {
+    return (v + align - 1) & ~(align - 1);
+}
+
 struct BlasEntry {
     std::vector<scarlettx::RtTriangle> triangles;
+    uint32_t build_flags = 0;
+    scarlettx::BvhAccelerationStructure bvh;
 };
 
 struct TlasEntry {
@@ -23,31 +31,77 @@ uint64_t g_next_bvh_handle = 0xB7000001ull;
 std::unordered_map<uint64_t, BlasEntry> g_blas_map;
 std::unordered_map<uint64_t, std::unique_ptr<TlasEntry>> g_tlas_map;
 
-}  // namespace
-
-extern "C" {
-
-int32_t XboxBvhBuildBlas(const SCARLETT_BVH_BUILD_DESC* desc, uint64_t* out_blas_handle) {
-    if (!desc || !desc->Triangles || desc->TriangleCount == 0 || !out_blas_handle) {
-        return -1;
-    }
-    BlasEntry entry;
-    entry.triangles.reserve(desc->TriangleCount);
-    for (uint32_t i = 0; i < desc->TriangleCount; ++i) {
-        const auto& src = desc->Triangles[i];
+std::vector<scarlettx::RtTriangle> ConvertTriangles(const SCARLETT_BVH_TRIANGLE* tris, uint32_t count) {
+    std::vector<scarlettx::RtTriangle> out;
+    out.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& src = tris[i];
         scarlettx::RtTriangle tri{};
         tri.v0 = {src.v0[0], src.v0[1], src.v0[2]};
         tri.v1 = {src.v1[0], src.v1[1], src.v1[2]};
         tri.v2 = {src.v2[0], src.v2[1], src.v2[2]};
         tri.color = {src.color[0], src.color[1], src.color[2]};
         tri.reflectivity = src.reflectivity;
-        entry.triangles.push_back(tri);
+        out.push_back(tri);
+    }
+    return out;
+}
+
+}  // namespace
+
+extern "C" {
+
+int32_t XboxBvhGetPrebuildInfo(uint32_t triangle_count,
+                               uint32_t build_flags,
+                               D3D12XBOX_RT_AS_PREBUILD_INFO* out_info) {
+    if (!out_info || triangle_count == 0) {
+        return -1;
+    }
+    const uint64_t n = triangle_count;
+    out_info->ResultDataMaxSizeInBytes = AlignUp(n * 192 + 256, 256);
+    out_info->ScratchDataSizeInBytes = AlignUp(n * 128 + 256, 256);
+    out_info->UpdateScratchDataSizeInBytes =
+        (build_flags & D3D12XBOX_AS_BUILD_FLAG_ALLOW_UPDATE) ? AlignUp(n * 64 + 256, 256) : 0;
+    return 0;
+}
+
+int32_t XboxBvhBuildBlas(const SCARLETT_BVH_BUILD_DESC* desc, uint64_t* out_blas_handle) {
+    if (!desc || !desc->Triangles || desc->TriangleCount == 0 || !out_blas_handle) {
+        return -1;
+    }
+    BlasEntry entry;
+    entry.build_flags = desc->BuildFlags;
+    entry.triangles = ConvertTriangles(desc->Triangles, desc->TriangleCount);
+    auto st = entry.bvh.Build(entry.triangles);
+    if (!st.ok()) {
+        return static_cast<int32_t>(st.code);
     }
 
     std::lock_guard<std::mutex> lock(g_bvh_mutex);
     const uint64_t handle = g_next_bvh_handle++;
     g_blas_map[handle] = std::move(entry);
     *out_blas_handle = handle;
+    return 0;
+}
+
+int32_t XboxBvhUpdateBlas(uint64_t blas_handle, const SCARLETT_BVH_BUILD_DESC* desc) {
+    if (!desc || !desc->Triangles || desc->TriangleCount == 0) {
+        return -1;
+    }
+    auto new_tris = ConvertTriangles(desc->Triangles, desc->TriangleCount);
+    scarlettx::BvhAccelerationStructure rebuilt;
+    auto st = rebuilt.Build(new_tris);
+    if (!st.ok()) {
+        return static_cast<int32_t>(st.code);
+    }
+
+    std::lock_guard<std::mutex> lock(g_bvh_mutex);
+    auto it = g_blas_map.find(blas_handle);
+    if (it == g_blas_map.end()) {
+        return -2;
+    }
+    it->second.triangles = std::move(new_tris);
+    it->second.bvh = std::move(rebuilt);
     return 0;
 }
 
@@ -82,6 +136,63 @@ int32_t XboxBvhBuildTlas(const uint64_t* blas_handles,
     const uint64_t handle = g_next_bvh_handle++;
     g_tlas_map[handle] = std::move(tlas);
     *out_tlas_handle = handle;
+    return 0;
+}
+
+int32_t XboxBvhGetStats(uint64_t handle, SCARLETT_BVH_STATS* out_stats) {
+    if (!out_stats) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(g_bvh_mutex);
+    const scarlettx::BvhAccelerationStructure* bvh = nullptr;
+    if (auto it = g_tlas_map.find(handle); it != g_tlas_map.end()) {
+        bvh = &it->second->bvh;
+    } else if (auto bit = g_blas_map.find(handle); bit != g_blas_map.end()) {
+        bvh = &bit->second.bvh;
+    }
+    if (!bvh) {
+        return -2;
+    }
+    const auto bounds = bvh->RootBounds();
+    out_stats->NodeCount = bvh->NodeCount();
+    out_stats->TriangleCount = bvh->TriangleCount();
+    out_stats->BoundsMin[0] = bounds.min.x;
+    out_stats->BoundsMin[1] = bounds.min.y;
+    out_stats->BoundsMin[2] = bounds.min.z;
+    out_stats->BoundsMax[0] = bounds.max.x;
+    out_stats->BoundsMax[1] = bounds.max.y;
+    out_stats->BoundsMax[2] = bounds.max.z;
+    return 0;
+}
+
+int32_t XboxBvhTraceSingleRay(uint64_t tlas_handle,
+                              const SCARLETT_RAY_DESC* ray,
+                              SCARLETT_RAY_HIT* out_hit) {
+    if (!ray || !out_hit) {
+        return -1;
+    }
+    std::memset(out_hit, 0, sizeof(*out_hit));
+    std::lock_guard<std::mutex> lock(g_bvh_mutex);
+    auto it = g_tlas_map.find(tlas_handle);
+    if (it == g_tlas_map.end()) {
+        return -2;
+    }
+
+    scarlettx::RtRay r{};
+    r.origin = {ray->Origin[0], ray->Origin[1], ray->Origin[2]};
+    r.direction = {ray->Direction[0], ray->Direction[1], ray->Direction[2]};
+    r.t_min = ray->TMin;
+    r.t_max = ray->TMax;
+
+    scarlettx::RtHit hit{};
+    if (it->second->bvh.TraceRay(r, hit, nullptr)) {
+        out_hit->Hit = 1;
+        out_hit->TriangleIndex = hit.triangle_index;
+        out_hit->T = hit.t;
+        out_hit->Normal[0] = hit.normal.x;
+        out_hit->Normal[1] = hit.normal.y;
+        out_hit->Normal[2] = hit.normal.z;
+    }
     return 0;
 }
 

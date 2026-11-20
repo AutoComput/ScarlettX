@@ -146,6 +146,14 @@ bool D3D12Backend::IsInitialized() const noexcept {
     return impl_ && impl_->device != nullptr;
 }
 
+void* D3D12Backend::NativeDevice() const noexcept {
+    return impl_ ? static_cast<void*>(impl_->device) : nullptr;
+}
+
+void* D3D12Backend::NativeDevice5() const noexcept {
+    return impl_ ? static_cast<void*>(impl_->device5) : nullptr;
+}
+
 Status D3D12Backend::Initialize(bool prefer_warp, bool enable_debug_layer) {
     Shutdown();
 

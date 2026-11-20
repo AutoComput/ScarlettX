@@ -9,7 +9,7 @@
 
 ![ScarlettX Status](docs/status.svg)
 
-**Overall Milestone Progress:** `50.0%` (93/186 tracked units) · **Exported HLE Symbols:** `81` · **Automated CTest Suite:** `9/9` passing
+**Overall Milestone Progress:** `61.5%` (118/192 tracked units) · **Exported HLE Symbols:** `105` · **Automated CTest Suite:** `10/10` passing
 
 | Subsystem | Category | Progress | Coverage | Details |
 | :--- | :--- | :---: | :---: | :--- |
@@ -19,8 +19,8 @@
 | **XUser & Identity** | `xgameruntime` | `13/24` | `54%` | 13 exports; synthetic Xbox Live profile, XUID, gamertag components, privileges |
 | **XSystem & Runtime** | `xgameruntime` | `12/18` | `67%` | 12 exports; Scarlett Anaconda device info, runtime/analytics, handle validation |
 | **XMem & Threading** | `xgameruntime` | `11/16` | `69%` | 11 exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state |
-| **d3d12_xs & WARP GPU** | `Graphics` | `8/28` | `29%` | 6 shim exports + headless D3D12/WARP backend, PresentX tokens, shader container IR |
-| **DXR / XboxBvhBuilder** | `Graphics` | `7/12` | `58%` | 4 shim exports + BLAS/TLAS builder, deterministic software RT (shadows/reflections), DXR probe |
+| **d3d12_xs → PC D3D12** | `Graphics` | `28/32` | `88%` | 26 exports; D3D12CreateDeviceX → real ID3D12Device, root-sig forwarding, PresentXEx/frame stats, Suspend/Resume, ResourceAllocationInfo, WARP backend |
+| **DXR / XboxBvhBuilder** | `Graphics` | `12/14` | `86%` | 8 BVH exports + DXR AS prebuild/build/destroy, BLAS update, single-ray trace, deterministic software BVH fallback (hardware DXR requires capable GPU) |
 | **DirectStorage & XVD** | `Storage` | `2/14` | `14%` | XStorage async I/O scaffold; DirectStorage queues & XVD mounting planned (Milestone 4) |
 | **Audio (XAudio2/XMA2)** | `Media` | `0/12` | `0%` | XAudio2 / XMA2 / Bink2Scarlett shims planned (Milestone 4) |
 | **Input (GameInput)** | `Input` | `0/10` | `0%` | GameInput / Xbox controller HLE planned (Milestone 4) |
@@ -36,8 +36,8 @@ Because Xbox Series X|S executables are native **x86-64 PE32+** binaries targeti
 | :--- | :--- | :--- |
 | **Package & PE64 Loader** | `MicrosoftGame.Config` parser (`XboxGen9`/`Scarlett`), in-process PE64 mapper (`DIR64`/`HIGHLOW` relocations, page protections), named/ordinal IAT & API-set resolution, x64 auto-stub thunk generator | Milestone 1 complete + tests |
 | **GDK Runtime (`xgameruntime.dll`)** | Real C ABI for `XGameRuntime*`, `XTaskQueue*`, `XAsync*`, `XUser*`, persistent disk-backed `XGameSave*`, `XSystem*`, `XMem*` hooks & virtual memory, `XThread*`, and `XStorage` | Milestone 2 complete + tests |
-| **Graphics (`d3d12_xs`)** | `d3d12_xs.dll` shim, real Windows Direct3D 12 + WARP headless backend, frame pipeline tokens, pixel readback | Initial implementation + tests |
-| **Ray Tracing (DXR / BVH)** | `XboxBvhBuilder.dll` shim, BLAS/TLAS acceleration structure builder, deterministic software ray tracer (primary, shadow, reflection rays) + live D3D12 DXR tier probe | Initial implementation + tests |
+| **Graphics (`d3d12_xs`)** | `d3d12_xs.dll` → PC D3D12 translation (`D3D12CreateDeviceX` returning real `ID3D12Device`, root-signature forwarding, `PresentXEx` + queue fence sync, frame interval/stats, `SuspendX`/`ResumeX`, `GetResourceAllocationInfo`, headless WARP backend) | Milestone 3 complete + tests |
+| **Ray Tracing (DXR / BVH)** | `d3d12_xs` DXR acceleration-structure prebuild/build/destroy + `XboxBvhBuilder.dll` (prebuild, BLAS build/update, TLAS, stats, single-ray trace, deterministic software BVH fallback; hardware DXR requires a DXR-capable GPU) | Milestone 3 complete + tests |
 | **Shader Translation** | DXBC/DXIL/Scarlett shader container inspector & IR scaffold | Scaffold + tests |
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md) for detailed design notes.

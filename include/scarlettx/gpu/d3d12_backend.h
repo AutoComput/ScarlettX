@@ -40,6 +40,8 @@ public:
     bool IsInitialized() const noexcept;
 
     const D3D12AdapterInfo& AdapterInfo() const noexcept { return adapter_info_; }
+    void* NativeDevice() const noexcept;
+    void* NativeDevice5() const noexcept;
 
     // Compiles HLSL shaders via D3DCompile, renders an RGB triangle on D3D12, and reads back RGBA8.
     Status RenderTestTriangle(uint32_t width, uint32_t height, FrameBufferRgba8& out_frame);

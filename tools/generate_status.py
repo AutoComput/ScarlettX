@@ -30,29 +30,14 @@ class Subsystem:
             return 0.0
         return min(100.0, (self.implemented / self.target) * 100.0)
 
-    @property
-    def state(self) -> str:
-        if self.pct >= 75.0:
-            return "tested"
-        if self.pct > 0.0:
-            return "partial"
-        return "planned"
-
-
-def count_regex(path: pathlib.Path, pattern: str) -> int:
-    if not path.exists():
-        return 0
-    return len(re.findall(pattern, path.read_text(encoding="utf-8", errors="ignore")))
-
 
 def count_exported_symbols(header: pathlib.Path, macro: str, prefix: str) -> int:
     if not header.exists():
         return 0
     text = header.read_text(encoding="utf-8", errors="ignore")
-    # Match declarations like: SCARLETTX_XGR_API <ret> SCARLETTX_GDK_CALLBACK XTaskQueue...(
     pat = re.compile(
         rf"{re.escape(macro)}\b[^;]*?\b({prefix}[A-Za-z0-9_]*)\s*\(",
-        re.MULTILINE,
+        re.MULTILINE | re.DOTALL,
     )
     return len(set(pat.findall(text)))
 
@@ -63,9 +48,11 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
     cmake_txt = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8", errors="ignore")
 
     # Count real CTest registrations
-    test_count = len(re.findall(r"\bscarlettx_add_test\(", cmake_txt)) + len(
-        re.findall(r"\badd_test\(", cmake_txt)
-    ) - 1  # subtract the add_test inside scarlettx_add_test function definition
+    test_count = (
+        len(re.findall(r"\bscarlettx_add_test\(", cmake_txt))
+        + len(re.findall(r"\badd_test\(", cmake_txt))
+        - 1  # subtract add_test inside scarlettx_add_test function definition
+    )
 
     # Count real exported xgameruntime symbols by GDK family
     xruntime_cnt = count_exported_symbols(xgr_hdr, "SCARLETTX_XGR_API", "XGameRuntime") + count_exported_symbols(
@@ -95,7 +82,6 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
         + bvh_cnt
     )
 
-    # Loader features verified by presence of implementation files
     loader_features = sum(
         1
         for rel in [
@@ -111,10 +97,10 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
     subsystems = [
         Subsystem(
             name="PE64 Loader & Auto-Stubs",
-            short_name="PE64 Loader",
+            short_name="Loader",
             category="Core",
             implemented=loader_features,
-            target=6,  # +1 for XVC/XVD package mounting
+            target=6,
             notes="PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks",
         ),
         Subsystem(
@@ -158,20 +144,26 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             notes=f"{xmem_cnt} exports; default/custom alloc hooks, VirtualAlloc/Free, time-sensitive thread state",
         ),
         Subsystem(
-            name="d3d12_xs & WARP GPU",
+            name="d3d12_xs → PC D3D12",
             short_name="d3d12_xs",
             category="Graphics",
-            implemented=d3d_cnt + 2,  # shim exports + WARP backend + shader IR
-            target=28,
-            notes=f"{d3d_cnt} shim exports + headless D3D12/WARP backend, PresentX tokens, shader container IR",
+            implemented=d3d_cnt + 2,
+            target=32,
+            notes=(
+                f"{d3d_cnt} exports; D3D12CreateDeviceX → real ID3D12Device, root-sig forwarding, "
+                "PresentXEx/frame stats, Suspend/Resume, ResourceAllocationInfo, WARP backend"
+            ),
         ),
         Subsystem(
             name="DXR / XboxBvhBuilder",
             short_name="DXR / BVH",
             category="Graphics",
-            implemented=bvh_cnt + 3,  # shim + BLAS/TLAS + software RT + DXR tier probe
-            target=12,
-            notes=f"{bvh_cnt} shim exports + BLAS/TLAS builder, deterministic software RT (shadows/reflections), DXR probe",
+            implemented=bvh_cnt + 4,
+            target=14,
+            notes=(
+                f"{bvh_cnt} BVH exports + DXR AS prebuild/build/destroy, BLAS update, single-ray trace, "
+                "deterministic software BVH fallback (hardware DXR requires capable GPU)"
+            ),
         ),
         Subsystem(
             name="DirectStorage & XVD",
@@ -202,169 +194,264 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
     return subsystems, total_exports, test_count
 
 
-def layout_treemap(
+# ---------------------------------------------------------------------------
+# Squarified Treemap (Bruls, Huizing, van Wijk) for clean aspect ratios
+# ---------------------------------------------------------------------------
+def _worst_aspect(row_areas: list[float], side: float) -> float:
+    if not row_areas or side <= 0:
+        return float("inf")
+    s = sum(row_areas)
+    s2 = s * s
+    side2 = side * side
+    return max(max((side2 * a) / s2, s2 / (side2 * a)) for a in row_areas if a > 0)
+
+
+def layout_squarified(
     items: list[tuple[Subsystem, float]], x: float, y: float, w: float, h: float
 ) -> list[tuple[Subsystem, float, float, float, float]]:
-    """Simple binary-split proportional treemap layout (deterministic, clean aspect ratios)."""
-    if not items:
-        return []
-    if len(items) == 1:
-        return [(items[0][0], x, y, w, h)]
-
     total = sum(weight for _, weight in items)
-    if total <= 0:
+    if total <= 0 or w <= 0 or h <= 0:
         return []
 
-    half = total / 2.0
-    acc = 0.0
-    split_idx = 1
-    for i, (_, weight) in enumerate(items):
-        acc += weight
-        if acc >= half and i + 1 < len(items):
-            split_idx = i + 1
-            break
+    scale = (w * h) / total
+    remaining = [(sub, weight * scale) for sub, weight in items]
+    result: list[tuple[Subsystem, float, float, float, float]] = []
 
-    left = items[:split_idx]
-    right = items[split_idx:]
-    left_sum = sum(weight for _, weight in left)
-    ratio = left_sum / total
+    cx, cy, cw, ch = x, y, w, h
+    while remaining:
+        short_side = min(cw, ch)
+        row: list[tuple[Subsystem, float]] = [remaining.pop(0)]
+        while remaining:
+            cand = remaining[0]
+            curr_areas = [a for _, a in row]
+            next_areas = curr_areas + [cand[1]]
+            if _worst_aspect(next_areas, short_side) <= _worst_aspect(curr_areas, short_side):
+                row.append(remaining.pop(0))
+            else:
+                break
 
-    if w >= h:
-        lw = w * ratio
-        return layout_treemap(left, x, y, lw, h) + layout_treemap(right, x + lw, y, w - lw, h)
-    else:
-        lh = h * ratio
-        return layout_treemap(left, x, y, w, lh) + layout_treemap(right, x, y + lh, w, h - lh)
+        row_area = sum(a for _, a in row)
+        if cw >= ch:
+            strip_w = row_area / ch if ch > 0 else 0.0
+            ry = cy
+            for sub, a in row:
+                rh = a / strip_w if strip_w > 0 else 0.0
+                result.append((sub, cx, ry, strip_w, rh))
+                ry += rh
+            cx += strip_w
+            cw -= strip_w
+        else:
+            strip_h = row_area / cw if cw > 0 else 0.0
+            rx = cx
+            for sub, a in row:
+                rw = a / strip_h if strip_h > 0 else 0.0
+                result.append((sub, rx, cy, rw, strip_h))
+                rx += rw
+            cy += strip_h
+            ch -= strip_h
+
+    return result
 
 
-def color_for_pct(pct: float) -> tuple[str, str]:
-    """Return (fill_hex, stroke_hex) matching dark GitHub / AnyPS5 palette."""
+def palette_for_pct(pct: float) -> tuple[str, str, str]:
+    """Return (tile_fill, tile_border, accent) in a restrained GitHub-dark palette."""
     if pct >= 75.0:
-        return ("#1f6f3b", "#3fb950")
+        return ("#15331d", "#245831", "#3fb950")
     if pct >= 40.0:
-        return ("#6e4c13", "#d29922")
+        return ("#34260e", "#634717", "#d29922")
     if pct > 0.0:
-        return ("#3b2e5a", "#a371f7")
-    return ("#21262d", "#30363d")
+        return ("#241d38", "#483770", "#a371f7")
+    return ("#161b22", "#2b3138", "#484f58")
+
+
+def fit_text(text: str, max_px: float, char_px: float) -> str:
+    if max_px <= char_px:
+        return ""
+    max_chars = int(max_px / char_px)
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 2:
+        return ""
+    return text[: max_chars - 1].rstrip() + "…"
 
 
 def render_svg(subsystems: list[Subsystem], total_exports: int, test_count: int) -> str:
-    width = 920
-    height = 540
+    width = 900
+    margin = 24
+    inner_w = width - 2 * margin
+
     total_impl = sum(s.implemented for s in subsystems)
     total_target = sum(s.target for s in subsystems)
     overall_pct = (total_impl / total_target * 100.0) if total_target else 0.0
 
-    # Sort descending by target weight for clean treemap tiles
+    # Layout geometry
+    header_y = 36
+    map_x, map_y, map_w, map_h = float(margin), 64.0, float(inner_w), 228.0
+    sub_hdr_y = int(map_y + map_h) + 28
+    grid_y = sub_hdr_y + 18
+    row_h = 26
+    num_rows = (len(subsystems) + 1) // 2
+    height = grid_y + num_rows * row_h + 18
+
     weighted = sorted([(s, float(s.target)) for s in subsystems], key=lambda t: t[1], reverse=True)
-    map_x, map_y, map_w, map_h = 24.0, 92.0, 560.0, 386.0
-    rects = layout_treemap(weighted, map_x, map_y, map_w, map_h)
+    rects = layout_squarified(weighted, map_x, map_y, map_w, map_h)
 
     lines: list[str] = []
     lines.append(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" role="img" aria-label="ScarlettX Emulation Status">'
     )
+
+    # Defs: typography + per-tile clipPaths (guarantees zero text overflow)
+    lines.append("  <defs>")
     lines.append(
-        """  <defs>
-    <style>
-      .bg { fill: #0d1117; }
-      .panel { fill: #161b22; stroke: #30363d; stroke-width: 1; }
-      .title { font: 700 20px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #f0f6fc; }
-      .subtitle { font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #8b949e; }
-      .stat-val { font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #3fb950; }
-      .stat-lbl { font: 500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #8b949e; }
-      .tile-title { font: 700 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #f0f6fc; }
-      .tile-sub { font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #c9d1d9; }
-      .bar-lbl { font: 600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #c9d1d9; }
-      .bar-pct { font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #8b949e; }
-      .legend { font: 500 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #8b949e; }
-    </style>
-  </defs>"""
+        """    <style>
+      .h1 { font: 600 18px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #e6edf3; }
+      .sub { font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #7d8590; }
+      .chip { font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #c9d1d9; }
+      .sec { font: 600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #7d8590; letter-spacing: 0.6px; }
+      .t-name { font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #e6edf3; }
+      .t-meta { font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #9ea7b3; }
+      .r-name { font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #c9d1d9; }
+      .r-num { font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #7d8590; }
+      .r-pct { font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #c9d1d9; }
+      .leg { font: 400 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #7d8590; }
+    </style>"""
     )
 
-    # Background + outer frame
-    lines.append(f'  <rect class="bg" x="0" y="0" width="{width}" height="{height}" rx="12"/>')
-    lines.append(f'  <rect class="panel" x="12" y="12" width="{width - 24}" height="{height - 24}" rx="10"/>')
+    gap = 2.5
+    tile_geoms: list[tuple[int, Subsystem, float, float, float, float]] = []
+    for idx, (sub, rx, ry, rw, rh) in enumerate(rects):
+        tx = rx + gap
+        ty = ry + gap
+        tw = max(2.0, rw - 2 * gap)
+        th = max(2.0, rh - 2 * gap)
+        tile_geoms.append((idx, sub, tx, ty, tw, th))
+        lines.append(
+            f'    <clipPath id="tc{idx}"><rect x="{tx + 2:.1f}" y="{ty + 2:.1f}" '
+            f'width="{max(1.0, tw - 4):.1f}" height="{max(1.0, th - 4):.1f}" rx="4"/></clipPath>'
+        )
+    lines.append("  </defs>")
 
-    # Header
-    lines.append('  <text class="title" x="28" y="44">ScarlettX — Xbox Series X|S (Scarlett) Emulation Status</text>')
+    # Flat dark canvas with subtle hairline border
     lines.append(
-        '  <text class="subtitle" x="28" y="64">Auto-generated from implemented HLE exports, PE64 loader modules, and CTest suite</text>'
+        f'  <rect x="0.5" y="0.5" width="{width - 1}" height="{height - 1}" rx="8" '
+        f'fill="#0d1117" stroke="#21262d" stroke-width="1"/>'
     )
 
-    # Top-right summary pills
-    pills = [
-        ("OVERALL", f"{overall_pct:.1f}%", "#3fb950"),
-        ("GDK/GPU EXPORTS", f"{total_exports}", "#58a6ff"),
-        ("CTEST SUITE", f"{test_count}/{test_count} PASS", "#3fb950"),
+    # Header: title + muted subtitle on left, compact right-aligned metric chips
+    lines.append(f'  <text class="h1" x="{margin}" y="{header_y}">Status</text>')
+    lines.append(
+        f'  <text class="sub" x="{margin + 64}" y="{header_y}">ScarlettX · Xbox Series X|S (Gen9) HLE</text>'
+    )
+
+    chips = [
+        (f"{overall_pct:.1f}% overall", "#3fb950"),
+        (f"{total_exports} exports", "#58a6ff"),
+        (f"{test_count}/{test_count} tests", "#3fb950"),
     ]
-    px = width - 318
-    for label, val, col in pills:
-        lines.append(f'  <rect x="{px}" y="24" width="96" height="46" rx="6" fill="#0d1117" stroke="#30363d"/>')
-        lines.append(f'  <text class="stat-lbl" x="{px + 8}" y="40">{html.escape(label)}</text>')
-        lines.append(f'  <text class="stat-val" x="{px + 8}" y="60" style="fill:{col}">{html.escape(val)}</text>')
-        px += 102
+    right_x = width - margin
+    for text, dot_col in reversed(chips):
+        chip_w = int(len(text) * 6.8 + 26)
+        cx = right_x - chip_w
+        cy = header_y - 16
+        lines.append(
+            f'  <rect x="{cx}" y="{cy}" width="{chip_w}" height="22" rx="4" '
+            f'fill="#161b22" stroke="#30363d" stroke-width="1"/>'
+        )
+        lines.append(f'  <circle cx="{cx + 10}" cy="{cy + 11}" r="3" fill="{dot_col}"/>')
+        lines.append(f'  <text class="chip" x="{cx + 18}" y="{cy + 15}">{html.escape(text)}</text>')
+        right_x = cx - 8
 
     # Treemap tiles
-    pad = 3.0
-    for sub, rx, ry, rw, rh in rects:
-        tx, ty, tw, th = rx + pad, ry + pad, max(4.0, rw - 2 * pad), max(4.0, rh - 2 * pad)
-        fill, stroke = color_for_pct(sub.pct)
+    for idx, sub, tx, ty, tw, th in tile_geoms:
+        fill, border, accent = palette_for_pct(sub.pct)
         lines.append(
             f'  <rect x="{tx:.1f}" y="{ty:.1f}" width="{tw:.1f}" height="{th:.1f}" '
-            f'rx="6" fill="{fill}" stroke="{stroke}" stroke-width="1.2"/>'
+            f'rx="4" fill="{fill}" stroke="{border}" stroke-width="1"/>'
         )
-        cx = tx + 10
-        cy = ty + 22
-        if tw >= 78 and th >= 42:
-            label = sub.short_name if tw < 155 else sub.name
-            lines.append(f'  <text class="tile-title" x="{cx:.1f}" y="{cy:.1f}">{html.escape(label)}</text>')
+        # Subtle 2px top progress accent bar inside each tile
+        if sub.pct > 0 and tw > 12:
+            bar_w = max(2.0, (tw - 2.0) * (sub.pct / 100.0))
             lines.append(
-                f'  <text class="tile-sub" x="{cx:.1f}" y="{cy + 17:.1f}">'
-                f'{sub.pct:.0f}% ({sub.implemented}/{sub.target})</text>'
-            )
-        elif tw >= 48 and th >= 26:
-            lines.append(
-                f'  <text class="tile-sub" x="{tx + 6:.1f}" y="{ty + 17:.1f}">'
-                f'{html.escape(sub.short_name)}</text>'
+                f'  <rect x="{tx + 1:.1f}" y="{ty + 1:.1f}" width="{bar_w:.1f}" height="2.5" '
+                f'rx="1" fill="{accent}" opacity="0.9"/>'
             )
 
-    # Right sidebar: per-subsystem progress bars
-    bx = 602
-    bw = 294
-    lines.append(f'  <rect x="{bx - 8}" y="95" width="{bw + 12}" height="380" rx="8" fill="#0d1117" stroke="#30363d"/>')
-    lines.append(f'  <text class="bar-lbl" x="{bx + 4}" y="116" style="fill:#f0f6fc">SUBSYSTEM BREAKDOWN</text>')
+        avail_w = tw - 16.0
+        if avail_w >= 28 and th >= 26:
+            # Prefer full name if it fits comfortably, otherwise short_name
+            title = sub.name if len(sub.name) * 7.2 <= avail_w else fit_text(sub.short_name, avail_w, 7.2)
+            if title:
+                lines.append(f'  <g clip-path="url(#tc{idx})">')
+                lines.append(
+                    f'    <text class="t-name" x="{tx + 8:.1f}" y="{ty + 21:.1f}">{html.escape(title)}</text>'
+                )
+                if th >= 44:
+                    meta_full = f"{sub.pct:.0f}% · {sub.implemented}/{sub.target}"
+                    meta_short = f"{sub.pct:.0f}%"
+                    meta = meta_full if len(meta_full) * 6.8 <= avail_w else (
+                        meta_short if len(meta_short) * 6.8 <= avail_w else ""
+                    )
+                    if meta:
+                        lines.append(
+                            f'    <text class="t-meta" x="{tx + 8:.1f}" y="{ty + 37:.1f}">{html.escape(meta)}</text>'
+                        )
+                lines.append("  </g>")
 
-    row_y = 134
-    for sub in subsystems:
-        _, stroke = color_for_pct(sub.pct)
-        lines.append(f'  <text class="bar-lbl" x="{bx + 4}" y="{row_y}">{html.escape(sub.short_name)}</text>')
-        lines.append(
-            f'  <text class="bar-pct" x="{bx + bw - 4}" y="{row_y}" text-anchor="end">'
-            f'{sub.implemented}/{sub.target} ({sub.pct:.0f}%)</text>'
-        )
-        bar_y = row_y + 5
-        bar_w = bw - 8
-        fill_w = max(0.0, (sub.pct / 100.0) * bar_w)
-        lines.append(f'  <rect x="{bx + 4}" y="{bar_y}" width="{bar_w}" height="6" rx="3" fill="#21262d"/>')
-        if fill_w > 0:
-            lines.append(f'  <rect x="{bx + 4}" y="{bar_y}" width="{fill_w:.1f}" height="6" rx="3" fill="{stroke}"/>')
-        row_y += 31
+    # Subsystems section header + inline legend
+    lines.append(f'  <text class="sec" x="{margin}" y="{sub_hdr_y}">SUBSYSTEMS</text>')
 
-    # Footer legend
-    ly = 502
     legend_items = [
-        ("#1f6f3b", "#3fb950", "Implemented & Tested (>=75%)"),
-        ("#6e4c13", "#d29922", "In Progress (40-74%)"),
-        ("#3b2e5a", "#a371f7", "Early / Scaffold (1-39%)"),
-        ("#21262d", "#30363d", "Planned (0%)"),
+        ("#3fb950", "Tested >=75%"),
+        ("#d29922", "Partial 40-74%"),
+        ("#a371f7", "Early 1-39%"),
+        ("#484f58", "Planned"),
     ]
-    lx = 28
-    for fill, stroke, text in legend_items:
-        lines.append(f'  <rect x="{lx}" y="{ly - 10}" width="12" height="12" rx="3" fill="{fill}" stroke="{stroke}"/>')
-        lines.append(f'  <text class="legend" x="{lx + 18}" y="{ly}">{html.escape(text)}</text>')
-        lx += 215
+    lx = width - margin
+    for col, label in reversed(legend_items):
+        item_w = int(len(label) * 6.2 + 16)
+        lx -= item_w
+        lines.append(f'  <rect x="{lx}" y="{sub_hdr_y - 8}" width="8" height="8" rx="2" fill="{col}"/>')
+        lines.append(f'  <text class="leg" x="{lx + 12}" y="{sub_hdr_y}">{html.escape(label)}</text>')
+        lx -= 12
+
+    lines.append(
+        f'  <line x1="{margin}" y1="{sub_hdr_y + 7}" x2="{width - margin}" y2="{sub_hdr_y + 7}" '
+        f'stroke="#21262d" stroke-width="1"/>'
+    )
+
+    # 2-column subsystem progress grid
+    col_gap = 28
+    col_w = (inner_w - col_gap) // 2  # 412px per column
+    bar_x_off = 186
+    bar_w = 128
+
+    for i, sub in enumerate(subsystems):
+        col = i // num_rows
+        row = i % num_rows
+        x0 = margin + col * (col_w + col_gap)
+        y0 = grid_y + row * row_h + 14
+        _, _, accent = palette_for_pct(sub.pct)
+
+        label = fit_text(sub.name, bar_x_off - 10, 6.9)
+        lines.append(f'  <text class="r-name" x="{x0}" y="{y0}">{html.escape(label)}</text>')
+
+        bx = x0 + bar_x_off
+        by = y0 - 7
+        lines.append(f'  <rect x="{bx}" y="{by}" width="{bar_w}" height="6" rx="3" fill="#21262d"/>')
+        if sub.pct > 0:
+            fw = max(3.0, bar_w * (sub.pct / 100.0))
+            lines.append(f'  <rect x="{bx}" y="{by}" width="{fw:.1f}" height="6" rx="3" fill="{accent}"/>')
+
+        lines.append(
+            f'  <text class="r-num" x="{x0 + col_w - 40}" y="{y0}" text-anchor="end">'
+            f'{sub.implemented}/{sub.target}</text>'
+        )
+        lines.append(
+            f'  <text class="r-pct" x="{x0 + col_w}" y="{y0}" text-anchor="end">'
+            f'{sub.pct:.0f}%</text>'
+        )
 
     lines.append("</svg>")
     return "\n".join(lines) + "\n"
@@ -379,7 +466,7 @@ def render_markdown_status(subsystems: list[Subsystem], total_exports: int, test
         "<!-- SCARLETTX_STATUS_START -->",
         "## Status",
         "",
-        f"![ScarlettX Status](docs/status.svg)",
+        "![ScarlettX Status](docs/status.svg)",
         "",
         f"**Overall Milestone Progress:** `{overall_pct:.1f}%` ({total_impl}/{total_target} tracked units) · "
         f"**Exported HLE Symbols:** `{total_exports}` · "
@@ -417,7 +504,6 @@ def main() -> None:
     if marker_pat.search(readme):
         new_readme = marker_pat.sub(md_block, readme)
     else:
-        # Insert right after the legal notice quote block
         anchor = "## Architecture Overview"
         if anchor in readme:
             new_readme = readme.replace(anchor, md_block + "\n\n" + anchor, 1)

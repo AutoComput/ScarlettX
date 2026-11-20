@@ -74,6 +74,7 @@ public:
 
     uint32_t NodeCount() const noexcept { return static_cast<uint32_t>(nodes_.size()); }
     uint32_t TriangleCount() const noexcept { return static_cast<uint32_t>(triangles_.size()); }
+    RtAabb RootBounds() const noexcept { return nodes_.empty() ? RtAabb{} : nodes_[0].bounds; }
 
 private:
     struct BvhNode {
