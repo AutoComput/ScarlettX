@@ -31,8 +31,11 @@ constexpr TestGuid kGuid073B7DCB = {
 constexpr TestGuid kGuidIUnknown = {
     0x00000000u, 0x0000u, 0x0000u, {0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
 
-constexpr TestGuid kGuidUnsupported37E56907 = {
+constexpr TestGuid kGuid37E56907 = {
     0x37E56907u, 0x2F10u, 0x41E8u, {0xB7, 0x2F, 0x36, 0xED, 0xB1, 0x85, 0x33, 0x1A}};
+
+constexpr TestGuid kGuidUnsupported973A344E = {
+    0x973A344Eu, 0x24BFu, 0x4D0Fu, {0x84, 0x57, 0x56, 0xC5, 0x34, 0x89, 0x2B, 0x29}};
 
 constexpr XGameResult kENoInterface = static_cast<XGameResult>(0x80004002u);
 constexpr XGameResult kENotImpl = static_cast<XGameResult>(0x80004001u);
@@ -85,12 +88,19 @@ int main() {
 
     // 2. Unsupported GUIDs must fail with E_NOINTERFACE and null out *out_impl.
     out = sentinel;
-    CHECK(QueryApiImpl(&kGuidUnsupported37E56907, &kGuidUnsupported37E56907, &out) == kENoInterface);
+    CHECK(QueryApiImpl(&kGuidUnsupported973A344E, &kGuidUnsupported973A344E, &out) == kENoInterface);
     CHECK(out == nullptr);
 
     out = sentinel;
-    CHECK(QueryApiImpl(&kGuid073B7DCB, &kGuidUnsupported37E56907, &out) == kENoInterface);
+    CHECK(QueryApiImpl(&kGuid073B7DCB, &kGuidUnsupported973A344E, &out) == kENoInterface);
     CHECK(out == nullptr);
+
+    // 2b. Second observed runtime GUID {37E56907-...} returns a ScarlettX-owned instance.
+    void* impl_37e5 = nullptr;
+    CHECK(QueryApiImpl(&kGuid37E56907, &kGuid37E56907, &impl_37e5) == XGR_S_OK);
+    CHECK(impl_37e5 != nullptr);
+    auto release_37e5 = LoadVtableSlot<FnRelease>(impl_37e5, 0x10);
+    CHECK(release_37e5(impl_37e5) == 0u);
 
     // 3. Matching API GUID with identical IID and with IID_IUnknown.
     void* impl = nullptr;
@@ -122,7 +132,7 @@ int main() {
     CHECK(qi_out == nullptr);
 
     qi_out = sentinel;
-    CHECK(qi(impl, &kGuidUnsupported37E56907, &qi_out) == kENoInterface);
+    CHECK(qi(impl, &kGuidUnsupported973A344E, &qi_out) == kENoInterface);
     CHECK(qi_out == nullptr);
 
     CHECK(qi(impl, &kGuidIUnknown, &qi_out) == XGR_S_OK);

@@ -9,7 +9,9 @@
 
 ![ScarlettX Status](docs/status.svg)
 
-**Status:** `76.4%` (252 of 330 tracked functions) · **Exports:** `240` · **Tests:** `17/17` passing · **Target:** `Xbox Series X|S (Gen9)`
+![Status of the game Concept Destruction](docs/status_concept_destruction.svg)
+
+**Emulator Status:** `62.4%` (252 of 404 tracked functions, including unimplemented `0%` subsystems) · **Concept Destruction:** `41.3%` (19 of 46 bring-up milestones) · **Exports:** `240` · **Tests:** `17/17` passing · **Target:** `Xbox Series X|S (Gen9)`
 
 | Subsystem | Category | Progress | Coverage | Details |
 | :--- | :--- | :---: | :---: | :--- |
@@ -26,9 +28,14 @@
 | **Middleware (Bink2 / FSR)** | `Middleware` | `22 of 34` | `65%` | 12 Bink2Scarlett + 10 amd_fidelityfx_loader/upscaler_xbox exports; deterministic offline HLE shims (synthetic RGBA/BGRA frames, bilinear upscale & hash) |
 | **XTaskQueue & XAsync** | `xgameruntime` | `15 of 24` | `62%` | 11 XTaskQueue + 4 XAsync exports (manual/threadpool/delayed/monitors/cancel) |
 | **XUser & Identity** | `xgameruntime` | `13 of 24` | `54%` | 13 exports; synthetic Xbox Live profile, XUID, gamertag components, privileges |
-| **Retail Crypto & Native Codecs** | `Platform` | `0 of 14` | `0%` | Encrypted retail XVD, production GDeflate/XMA2/Bink codecs, RDNA2 XS2 ISA lifting, hardware DXR, Vulkan |
+| **Hardware DXR & Vulkan Backend** | `Graphics` | `0 of 14` | `0%` | Hardware GPU ray tracing (DXR Tier 1.1) and cross-platform Vulkan / vkd3d-proton backend |
+| **Live Xbox Services (XSAPI/WinRT)** | `Platform` | `0 of 16` | `0%` | Full Xbl* Xbox Live services, WinRT runtime activation, achievements, multiplayer |
+| **Production Codecs (XMA2/GDeflate/Bink)** | `Media` | `0 of 16` | `0%` | Native SHAPE XMA2 transform audio, hardware GDeflate/BCPack, production Bink2 & GPU FSR |
+| **RDNA2 XS2 Shader Lifting** | `Graphics` | `0 of 16` | `0%` | Precompiled RDNA2/Scarlett GPU microcode lifting to PC DXIL or SPIR-V |
+| **Retail XVC/XVD Crypto** | `Storage` | `0 of 12` | `0%` | Encrypted & digitally signed retail .xvc/.xvd package decryption and verification |
+| **Xbox Unified Memory & KernelX** | `Platform` | `0 of 14` | `0%` | MEM_GRAPHICS, 64 KB / 4 MB physical-virtual aliasing, full Game OS kernel services |
 
-> **Not started:** encrypted retail XVD decryption, production GDeflate/XMA2/Bink decoding, precompiled RDNA2 `XS2` ISA lifting, hardware DXR (software BVH fallback is verified on WARP), and Vulkan backend. Passing synthetic tests do not imply commercial retail title execution.
+> **Not started (0%):** Xbox unified memory (`MEM_GRAPHICS`) & full KernelX, precompiled RDNA2 `XS2` ISA lifting, encrypted retail XVC/XVD decryption, production GDeflate/XMA2/Bink decoding, hardware DXR & Vulkan backend, and live XSAPI/WinRT services. Passing synthetic tests do not imply commercial retail title execution.
 
 _Regenerate with `python tools/generate_status.py` after adding new HLE APIs or subsystems._
 <!-- SCARLETTX_STATUS_END -->
@@ -40,33 +47,35 @@ Because Xbox Series X|S executables are native **x86-64 PE32+** binaries targeti
 | Subsystem | Components | Status |
 | :--- | :--- | :--- |
 | **Package & PE64 Loader** | `MicrosoftGame.Config` parser (`XboxGen9`/`Scarlett`), in-process PE64 mapper (`DIR64`/`HIGHLOW` relocations, page protections), named/ordinal IAT & API-set resolution (`api-ms-win-core-synch-l1-2-*`, `rtlsupport`, `psm-appnotify`), dynamic `LoadLibrary` shim redirection, x64 auto-stub thunk generator | Phase 1 updated + tests |
-| **GDK Runtime (`xgameruntime.dll`)** | C ABI for `XGameRuntime*`, `XTaskQueue*`, `XAsync*`, `XUser*`, persistent disk-backed `XGameSave*`, `XSystem*`, `XMem*` hooks & virtual memory, `XThread*`, `XStorage`, `InitializeApiImpl`/`InitializeApiImplEx`, `UninitializeApiImpl`, `XErrorReport`, plus ScarlettX-owned guest COM vtable for `QueryApiImpl({073B7DCB-1FCF-4030-94BE-E3C9EB623428})` (`+0x00`/`+0x08`/`+0x10`/`+0x30`/`+0x60`/`+0x80`/`+0x88`/`+0xE8`) | Phase 2 updated + tests |
-| **Graphics (`d3d12_xs` / `xg_xs`)** | `d3d12_xs.dll` (`D3D12XboxCreateDevice`, `D3D12XboxSetProcessDebugFlags`, `D3D12SerializeRootSignature`, `D3D12XboxCreateSyntheticDevice`, fail-closed COM boundary for real titles until Xbox `ID3D12Device` vtable wrapper is implemented) + `xg_xs.dll` (`XGCreateTexture2DComputer`, `XGComputeOptimalSwizzleMode`) | Phase 1 cleanup + tests |
+| **GDK Runtime (`xgameruntime.dll`)** | C ABI for `XGameRuntime*`, `XTaskQueue*`, `XAsync*`, `XUser*`, persistent disk-backed `XGameSave*`, `XSystem*`, `XMem*` hooks & virtual memory, `XThread*`, `XStorage`, `InitializeApiImpl`/`InitializeApiImplEx`, `UninitializeApiImpl`, `XErrorReport`, plus ScarlettX-owned guest COM vtables for `QueryApiImpl` GUIDs `{073B7DCB-1FCF-4030-94BE-E3C9EB623428}` and `{37E56907-2F10-41E8-B72F-36EDB185331A}` | Phase 3 updated + tests |
+| **Graphics (`d3d12_xs` / `xg_xs`)** | `d3d12_xs.dll` (`D3D12XboxCreateDevice`, `D3D12XboxSetProcessDebugFlags`, `D3D12SerializeRootSignature`, `D3D12XboxCreateSyntheticDevice`, ScarlettX-owned Xbox COM proxy wrappers for device, queues `0x2`/`0x10`, fences, descriptor heaps, allocators, root signatures, graphics PSOs, resources, command lists, and frame events) + `xg_xs.dll` (`XGCreateTexture2DComputer`, `XGComputeOptimalSwizzleMode`) | Phase 3 in progress + tests |
 | **Ray Tracing (DXR / BVH)** | Synthetic `d3d12_xs` DXR acceleration-structure prebuild/build/destroy + `XboxBvhBuilder.dll` (synthetic signatures + deterministic software BVH fallback; hardware DXR requires a DXR-capable GPU) | Synthetic scaffold + tests |
 | **DirectStorage & XVD (`dstorage_xs.dll`)** | Renamed to Xbox `dstorage_xs.dll`; async worker-thread I/O queues, file/memory/XVD reads, fence callbacks, status arrays, cancellation by tag, synthetic LZ-RLE test codec, unencrypted XVD container parser + `PackageVfs::MountXvd` | Phase 1 cleanup + tests |
-| **Audio (`xaudio2_9.dll` / `AcpHal.dll`)** | `XAudio2_9.dll` with verified ordinal `#1` (`XAudio2Create`, failing closed for real titles until Xbox COM wrapper exists) + `AcpHal.dll` (`ApuAlloc`/`ApuFree`/`ApuMapVirtualAddress`/`ApuIsVirtualAddressValid`/`AcpHalCreate`/`AcpHalAllocateShapeContexts`/`AcpHalReleaseShapeContexts`) + headless PCM mixer & synthetic XMA2 test decoder | Phase 1 updated + tests |
+| **Audio (`xaudio2_9.dll` / `AcpHal.dll`)** | `XAudio2_9.dll` with verified ordinal `#1` (`XAudio2Create`, failing closed for real titles until Xbox COM wrapper exists) + `AcpHal.dll` (`ApuAlloc`/`ApuFree`/`ApuMapVirtualAddress`/`ApuIsVirtualAddressValid`/`AcpHalCreate`/`AcpHalAllocateShapeContexts`/`AcpHalReleaseShapeContexts`) + headless PCM mixer & synthetic XMA2 test decoder | Phase 3 updated + tests |
 | **Input (`GameInput.dll`)** | `GameInput.dll` with verified ordinal `#1` (`GameInputCreate`), virtual Xbox Series controller & keyboard enumeration, reading history (`Current`/`Next`/`Previous`), deterministic input injection, 4-motor impulse-trigger rumble | Phase 1 updated + tests |
 | **Shader & PSO Pipeline** | DXIL/DXBC container parser (stage, shader model, I/O params, RT exports, embedded root sig, content hash), Xbox-private chunk stripping (`XBOX`/`XS2M`), explicit unsupported-format error on precompiled RDNA2 `XS2`, D3D12 root signatures, descriptor heaps, graphics/compute/software-DXR PSOs, pipeline cache stats, draw/dispatch/RT command execution | Synthetic scaffold + tests |
 | **Middleware (`Bink2` / `FidelityFX`)** | `Bink2Scarlett.dll` (open/decode/advance/pause/seek/RGBA/BGRA/summary), `amd_fidelityfx_loader_xbox.dll` & `amd_fidelityfx_upscaler_xbox.dll` (context lifecycle, quality ratios, render resolution, jitter, deterministic bilinear upscale & frame hash) | Synthetic scaffold + tests |
 | **Networking (`libHttpClient` / `XCurl`)** | `libHttpClient.GDK.dll` (init, mock registry, request setup, async callbacks, offline fallback), `XCurl.dll` (easy handle lifecycle, `curl_easy_setopt`, write callbacks, `curl_easy_getinfo`, slist headers, mock/offline responses) | Synthetic scaffold + tests |
 | **End-to-End Integration** | `scarlett_arena` synthetic Gen9 game booting via in-process PE64 mapper (with isolated guest `atexit` cleanup) and child process across `xgameruntime`, `dstorage_xs`/XVD, `GameInput`, `d3d12_xs` + software BVH RT, `XAudio2`, and `XGameSave` | Synthetic E2E + tests |
 
-### Real-Title Bring-Up (Verified Observations)
+### Real-Title Bring-Up (Verified Observations — Concept Destruction)
 
-Testing against an unencrypted commercial Xbox Series X|S (`Scarlett`) Unity IL2CPP title (kept strictly outside the repository) established:
+Testing against an unencrypted commercial Xbox Series X|S (`Scarlett`) Unity IL2CPP title (**Concept Destruction**, kept strictly outside the repository) established:
 
 - **Phase 1 — Static inspection & image mapping:** PE64 image maps with 405 imported symbols and 3 remaining auto-stubs; ScarlettX's `d3d12_xs.dll`, `xg_xs.dll`, and `AcpHal.dll` resolve all static Xbox imports.
-- **Phase 2 — `QueryApiImpl` COM interface (`{073B7DCB-1FCF-4030-94BE-E3C9EB623428}`):** Reverse-engineered the target's Windows x64 register ABI (`RCX=api_id`, `RDX=riid`, `R8=out_impl`) and vtable offsets (`+0x00`/`+0x08`/`+0x10`, `+0x30`, `+0x60`, `+0x80`, `+0x88`, `+0xE8`) without asserting an unverified official interface name. Implemented a ScarlettX-owned 32-slot guest COM object in `xgameruntime.dll` with dedicated ABI tests (`test_query_api_impl`).
-- **Controlled startup trace (Phase 2):** Redirecting `xgameruntime.dll` enters ScarlettX's shim and executes `InitializeApiImplEx(build=19041, rev=10002, flags=0x0)` → `S_OK`, repeated `QueryApiImpl({073B7DCB-1FCF-4030-94BE-E3C9EB623428})` → `S_OK`, `+0x60(work=0, comp=0)` → `S_OK` (allocates queue handle), `+0x88(q)` on teardown, and loads `GameAssembly.dll`, `d3d12_xs.dll`, `xg_xs.dll`, `AcpHal.dll`, `GameInput.dll`, `xaudio2_9.dll`, and `D3D12Core.dll`. A second unresolved GUID `{37E56907-2F10-41E8-B72F-36EDB185331A}` returns `E_NOINTERFACE`, and the process still exits via `NtTerminateProcess` with code `1` (observed FMOD validation path in backtrace; root cause under investigation).
-- **Current classification:** **Static inspection + image mapping + early startup trace** (not yet partial boot or gameplay).
+- **Phase 2 — `QueryApiImpl` COM interface (`{073B7DCB-1FCF-4030-94BE-E3C9EB623428}`):** Reverse-engineered the target's Windows x64 register ABI (`RCX=api_id`, `RDX=riid`, `R8=out_impl`) and vtable offsets (`+0x00`/`+0x08`/`+0x10`, `+0x30`, `+0x60`, `+0x80`, `+0x88`, `+0xE8`). Implemented a ScarlettX-owned 32-slot guest COM object in `xgameruntime.dll` with dedicated ABI tests (`test_query_api_impl`).
+- **Phase 3 — Second `QueryApiImpl` GUID, `AcpHal`, and `d3d12_xs` Proxy Bring-Up (In Progress):**
+  - `QueryApiImpl({37E56907-2F10-41E8-B72F-36EDB185331A})` now returns `S_OK` via a ScarlettX-owned guest COM object (`+0x80`/`+0x30`/`+0x38`/`+0x88` observed; two additional runtime GUIDs `{973A344E-...}` and `{E349BD1A-...}` still return `E_NOINTERFACE`).
+  - `AcpHal` shape-context allocation succeeds and `d3d12_xs` guest-facing COM proxies advance into Unity's D3D12 initialization: creating the device, queues (raw types `0x2` and provisional `0x10`), fences, descriptor heaps, command signatures, allocators, root signatures, graphics PSOs, 1920×1080 render targets, frame events (`SetFrameIntervalX`/`ScheduleFrameEventX`), committed resources, `XGComputeOptimalSwizzleMode`/`XGCreateTexture2DComputer`, and recording uploads.
+  - Adding PC resource-state sanitization for texture barriers resolved the earlier `D3D12: Removing Device` (`0x887A0005`) failure on the latest trace; the target now completes 13 of 17 `CmdList::Close` calls with `S_OK` and executes 11 `ExecuteCommandLists` submissions.
+  - **Active blocker:** The target still exits before `PresentX` (`0` calls observed) with an access violation (`0xC0000005` at executable VA `0x140095411`). Unimplemented command-list vtable slots (`21`, `22`, `50`, `51`, `52`, `67`, `83`) and the copy-texture ABI are currently under investigation.
+- **Current classification:** **Static inspection + image mapping + early startup trace** (not yet first frame, partial boot, or playable gameplay).
 
 ### Current Limitations
 
-- **Xbox COM vtable wrappers:** Real-title `D3D12XboxCreateDevice` and `XAudio2Create` fail closed (`E_NOTIMPL`) rather than exposing raw PC COM pointers; full Xbox `ID3D12Device`/`IXAudio2` vtable wrappers and `QueryApiImpl` GDK COM interfaces are next.
-- **Retail packages:** Encrypted retail `.xvc` / XVD packages are not supported; only unencrypted loose packages and unencrypted XVDs are mounted.
-- **Shaders & Ray Tracing:** Precompiled RDNA2 `XS2` ISA lifting is not implemented (returns `UnsupportedFormat`); hardware DXR requires a DXR-capable GPU (CI/WARP runs the verified software BVH fallback).
-- **Codecs & Middleware:** `Bink2Scarlett`, `amd_fidelityfx_*_xbox`, `dstorage_xs` decompression, and `XMA2` use deterministic offline/synthetic HLE shims rather than production Bink, GPU FSR, GDeflate, or transform XMA2 codecs.
-- **Networking & Graphics Backend:** `libHttpClient.GDK` and `XCurl` run offline with mock/fallback responses; graphics currently target PC D3D12 (no native Vulkan backend yet). Passing synthetic tests do not imply commercial retail title execution.
+- **Xbox COM vtable wrappers:** `d3d12_xs` guest-facing proxies are in active Phase 3 bring-up (command-list slots, copy ABI, and `PresentX` presentation are incomplete); `XAudio2Create` still fails closed (`E_NOTIMPL`) for real titles until an Xbox `IXAudio2` COM wrapper is implemented.
+- **Unimplemented 0% subsystems:** Xbox unified memory (`MEM_GRAPHICS`, 64 KB / 4 MB physical-virtual aliasing) & full KernelX, precompiled RDNA2 `XS2` ISA lifting, encrypted retail `.xvc`/`.xvd` decryption, production GDeflate/BCPack/XMA2/Bink2/GPU FSR codecs, hardware DXR Tier 1.1 & Vulkan backend, and live XSAPI/WinRT services.
+- **Codecs, Middleware & Networking:** `Bink2Scarlett`, `amd_fidelityfx_*_xbox`, `dstorage_xs` decompression, `XMA2`, `libHttpClient.GDK`, and `XCurl` use deterministic offline/synthetic HLE shims for automated tests. Passing synthetic tests do not imply commercial retail title execution.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md) for detailed design notes.
 

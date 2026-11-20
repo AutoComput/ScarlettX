@@ -108,9 +108,9 @@
 </head>
 <body>
 <main class="status">
-  <h2>Status: 76.4%</h2>
+  <h2>Status: 62.4%</h2>
   <div class="badges">
-    <span class="badge"><span class="k">functions</span><span class="v-fn">252/330</span></span>
+    <span class="badge"><span class="k">functions</span><span class="v-fn">252/404</span></span>
     <span class="badge"><span class="k">exports</span><span class="v-exports">240</span></span>
     <span class="badge"><span class="k">tests</span><span class="v-tests">17/17 passing</span></span>
     <span class="badge"><span class="k">target</span><span class="v-target">Xbox Series X|S (Gen9)</span></span>
@@ -124,7 +124,7 @@
   <div class="list" id="list"></div>
   <div class="callout">
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 15 14H1z" fill="none" stroke="#d29922" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6v3.5M8 11.6v.4" stroke="#d29922" stroke-width="1.5" stroke-linecap="round"/></svg>
-    <span><strong>Not started:</strong> encrypted retail XVD, production GDeflate/XMA2/Bink codecs, RDNA2 XS2 ISA lifting, hardware DXR, and Vulkan backend.</span>
+    <span><strong>Not started:</strong> Xbox unified memory/KernelX, RDNA2 XS2 lifting, retail XVC/XVD crypto, native XMA2/GDeflate/Bink, hardware DXR/Vulkan, and live XSAPI/WinRT.</span>
   </div>
 </main>
 <script>
@@ -142,7 +142,12 @@
     ['Midw', 'Middleware (Bink2 / FSR)', 22, 34],
     ['Net', 'Networking (HTTP / XCurl)', 31, 40],
     ['PE64', 'PE64 Loader & Auto-Stubs', 6, 6],
-    ['Retail', 'Retail Crypto & Native Codecs', 0, 14],
+    ['Kern', 'Xbox Unified Memory & KernelX', 0, 14],
+    ['XS2', 'RDNA2 XS2 Shader Lifting', 0, 16],
+    ['Crypt', 'Retail XVC/XVD Crypto', 0, 12],
+    ['Codec', 'Production Codecs (XMA2/GDeflate/Bink)', 0, 16],
+    ['Vulk', 'Hardware DXR & Vulkan Backend', 0, 14],
+    ['XSAPI', 'Live Xbox Services (XSAPI/WinRT)', 0, 16],
   ];
   const level = p => p >= 0.8 ? 'lv3' : p >= 0.6 ? 'lv2' : p >= 0.4 ? 'lv1' : 'lv0';
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };

@@ -314,16 +314,126 @@ def collect_metrics() -> tuple[list[Subsystem], int, int]:
             notes="PE32+ mapping, DIR64/HIGHLOW relocs, named/ordinal IAT, API-set redirection, x64 auto-stub thunks",
         ),
         Subsystem(
-            name="Retail Crypto & Native Codecs",
-            short_name="Retail",
+            name="Xbox Unified Memory & KernelX",
+            short_name="Kern",
             category="Platform",
             implemented=0,
             target=14,
-            notes="Encrypted retail XVD, production GDeflate/XMA2/Bink codecs, RDNA2 XS2 ISA lifting, hardware DXR, Vulkan",
+            notes="MEM_GRAPHICS, 64 KB / 4 MB physical-virtual aliasing, full Game OS kernel services",
+        ),
+        Subsystem(
+            name="RDNA2 XS2 Shader Lifting",
+            short_name="XS2",
+            category="Graphics",
+            implemented=0,
+            target=16,
+            notes="Precompiled RDNA2/Scarlett GPU microcode lifting to PC DXIL or SPIR-V",
+        ),
+        Subsystem(
+            name="Retail XVC/XVD Crypto",
+            short_name="Crypt",
+            category="Storage",
+            implemented=0,
+            target=12,
+            notes="Encrypted & digitally signed retail .xvc/.xvd package decryption and verification",
+        ),
+        Subsystem(
+            name="Production Codecs (XMA2/GDeflate/Bink)",
+            short_name="Codec",
+            category="Media",
+            implemented=0,
+            target=16,
+            notes="Native SHAPE XMA2 transform audio, hardware GDeflate/BCPack, production Bink2 & GPU FSR",
+        ),
+        Subsystem(
+            name="Hardware DXR & Vulkan Backend",
+            short_name="Vulk",
+            category="Graphics",
+            implemented=0,
+            target=14,
+            notes="Hardware GPU ray tracing (DXR Tier 1.1) and cross-platform Vulkan / vkd3d-proton backend",
+        ),
+        Subsystem(
+            name="Live Xbox Services (XSAPI/WinRT)",
+            short_name="XSAPI",
+            category="Platform",
+            implemented=0,
+            target=16,
+            notes="Full Xbl* Xbox Live services, WinRT runtime activation, achievements, multiplayer",
         ),
     ]
 
     return subsystems, total_exports, test_count
+
+
+def collect_concept_destruction_metrics() -> list[Subsystem]:
+    """Verified real-title bring-up progress for Concept Destruction (Scarlett Gen9 Unity IL2CPP)."""
+    return [
+        Subsystem(
+            name="PE64 Mapping & Imports",
+            short_name="PE64",
+            category="Loader",
+            implemented=4,
+            target=4,
+            notes="Manifest parsed, PE64 mapped (405 imports), static Xbox DLLs resolved, G:\\ package mount",
+        ),
+        Subsystem(
+            name="xgameruntime & QueryApiImpl",
+            short_name="XGR",
+            category="Runtime",
+            implemented=4,
+            target=6,
+            notes="InitializeApiImplEx, GUIDs {073B7DCB-...} & {37E56907-...}, task queues; 2 GUIDs still E_NOINTERFACE",
+        ),
+        Subsystem(
+            name="d3d12_xs Device & Resources",
+            short_name="Dev",
+            category="Graphics",
+            implemented=6,
+            target=8,
+            notes="Device, queues (0x2/0x10), fences, descriptor heaps, root sigs, graphics PSOs, 1080p RTs",
+        ),
+        Subsystem(
+            name="xg_xs & AcpHal Shims",
+            short_name="XG/APU",
+            category="Platform",
+            implemented=2,
+            target=4,
+            notes="XGComputeOptimalSwizzleMode, XGCreateTexture2DComputer, AcpHal shape-context allocation",
+        ),
+        Subsystem(
+            name="d3d12_xs CmdList & Uploads",
+            short_name="CmdL",
+            category="Graphics",
+            implemented=3,
+            target=10,
+            notes="CreateCommandListX, Close (13/17 S_OK), ExecuteCommandLists (11x); slots 21/22/50/51/52/67/83 & copy ABI pending",
+        ),
+        Subsystem(
+            name="Presentation & First Frame",
+            short_name="Pres",
+            category="Graphics",
+            implemented=0,
+            target=5,
+            notes="PresentX not yet reached; swapchain output, first rendered frame, WaitFrameEventX pacing pending",
+        ),
+        Subsystem(
+            name="Audio & Input (Runtime)",
+            short_name="Aud/In",
+            category="Media",
+            implemented=0,
+            target=4,
+            notes="XAudio2_9 Xbox COM wrapper, FMOD audio output, live GameInput polling, rumble",
+        ),
+        Subsystem(
+            name="In-Game & Playable",
+            short_name="Game",
+            category="Gameplay",
+            implemented=0,
+            target=5,
+            notes="Title screen, menus, 3D gameplay rendering, physics/collision, save persistence",
+        ),
+    ]
 
 
 def _badge_width(text: str) -> int:
@@ -331,7 +441,14 @@ def _badge_width(text: str) -> int:
     return max(26, int(round(len(text) * 6.4)) + 14)
 
 
-def render_svg(subsystems: list[Subsystem], total_exports: int, test_count: int) -> str:
+def render_svg(
+    subsystems: list[Subsystem],
+    badges: list[tuple[str, str, str, bool]],
+    heading_prefix: str = "Status",
+    callout_lead: str = "Not started:",
+    callout_line1: str = "Xbox unified memory/KernelX, RDNA2 XS2 lifting, retail XVC/XVD crypto, native XMA2/GDeflate/Bink,",
+    callout_line2: str = "hardware DXR/Vulkan, and live XSAPI/WinRT. Synthetic offline shims do not imply retail compatibility.",
+) -> str:
     W = 900
     PAD_X = 36
     PAD_Y = 30
@@ -364,9 +481,9 @@ def render_svg(subsystems: list[Subsystem], total_exports: int, test_count: int)
     raw_graph_w = sum(gw for _, _, gw in groups) + GROUP_GAP * max(0, len(groups) - 1)
     if raw_graph_w > avail_graph_w:
         scale = avail_graph_w / raw_graph_w
-        CELL = max(8, int(math.floor(CELL * scale)))
+        CELL = max(7, int(math.floor(CELL * scale)))
         CELL_GAP = max(2, int(math.floor(CELL_GAP * scale)))
-        GROUP_GAP = max(6, int(math.floor(GROUP_GAP * scale)))
+        GROUP_GAP = max(5, int(math.floor(GROUP_GAP * scale)))
         groups = []
         for s in subsystems:
             cols = max(2, math.ceil(s.target / ROWS))
@@ -391,20 +508,20 @@ def render_svg(subsystems: list[Subsystem], total_exports: int, test_count: int)
     ROW_H = 30
     list_h = list_rows_per_col * ROW_H
 
-    not_started = [s for s in subsystems if s.implemented == 0]
-    callout_h = 44 if not_started else 0
-    y_callout = y_list + list_h + (16 if not_started else 0)
-    H = (y_callout + callout_h if not_started else y_list + list_h) + PAD_Y
+    has_callout = bool(callout_line1)
+    callout_h = 44 if has_callout else 0
+    y_callout = y_list + list_h + (16 if has_callout else 0)
+    H = (y_callout + callout_h if has_callout else y_list + list_h) + PAD_Y
 
     lines: list[str] = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" '
-        f'aria-label="ScarlettX Status: {overall_pct:.1f}%">',
+        f'aria-label="{html.escape(heading_prefix)}: {overall_pct:.1f}%">',
         "  <style>",
         "    text { font-family: 'Mona Sans', -apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif; }",
         f"    .h2 {{ font-size: 26px; font-weight: 600; fill: {FG}; }}",
         "    .badge-txt { font-family: Verdana, 'DejaVu Sans', Geneva, sans-serif; font-size: 11px; fill: #ffffff; }",
         f"    .badge-txt-dark {{ font-family: Verdana, 'DejaVu Sans', Geneva, sans-serif; font-size: 11px; fill: {BG}; }}",
-        f"    .g-label {{ font-size: 11px; fill: {FG_MUTED}; }}",
+        f"    .g-label {{ font-size: 10px; fill: {FG_MUTED}; }}",
         f"    .legend-txt {{ font-size: 12px; fill: {FG_MUTED}; }}",
         f"    .r-name {{ font-size: 13px; fill: {FG}; }}",
         f"    .r-count {{ font-size: 13px; fill: {FG_MUTED}; font-variant-numeric: tabular-nums; }}",
@@ -415,18 +532,12 @@ def render_svg(subsystems: list[Subsystem], total_exports: int, test_count: int)
         f'  <rect width="{W}" height="{H}" fill="{BG}"/>',
         "",
         "  <!-- 1. Heading -->",
-        f'  <text class="h2" x="{PAD_X}" y="{y_heading_baseline}">Status: {overall_pct:.1f}%</text>',
+        f'  <text class="h2" x="{PAD_X}" y="{y_heading_baseline}">{html.escape(heading_prefix)}: {overall_pct:.1f}%</text>',
         f'  <line x1="{PAD_X}" y1="{y_heading_rule}" x2="{W - PAD_X}" y2="{y_heading_rule}" stroke="{BORDER_STRONG}" stroke-width="1"/>',
         "",
         "  <!-- 2. Badge row -->",
     ]
 
-    badges = [
-        ("functions", f"{total_impl}/{total_target}", BADGE_FN, True),
-        ("exports", str(total_exports), BADGE_EXPORTS, False),
-        ("tests", f"{test_count}/{test_count} passing", BADGE_TESTS, False),
-        ("target", "Xbox Series X|S (Gen9)", BADGE_TARGET, False),
-    ]
     bx = PAD_X
     for idx, (k, v, v_bg, dark_v) in enumerate(badges):
         kw = _badge_width(k)
@@ -524,7 +635,7 @@ def render_svg(subsystems: list[Subsystem], total_exports: int, test_count: int)
             f'stroke="{BORDER_MUTED}" stroke-width="1"/>'
         )
 
-    if not_started:
+    if has_callout:
         lines.append("")
         lines.append("  <!-- 5. Warning callout -->")
         lines.append(f'  <rect x="{PAD_X}" y="{y_callout}" width="4" height="{callout_h}" fill="{WARN}"/>')
@@ -539,13 +650,14 @@ def render_svg(subsystems: list[Subsystem], total_exports: int, test_count: int)
         tx = ix + 26
         lines.append(
             f'  <text class="callout-txt" x="{tx}" y="{y_callout + 19}">'
-            f'<tspan class="callout-lead">Not started:</tspan> '
-            f'encrypted retail XVD, production GDeflate/XMA2/Bink codecs, RDNA2 XS2 ISA lifting, hardware DXR,</text>'
+            f'<tspan class="callout-lead">{html.escape(callout_lead)}</tspan> '
+            f'{html.escape(callout_line1)}</text>'
         )
-        lines.append(
-            f'  <text class="callout-txt" x="{tx}" y="{y_callout + 36}">'
-            f'and Vulkan backend. Synthetic offline HLE shims cover middleware and networking for automated tests.</text>'
-        )
+        if callout_line2:
+            lines.append(
+                f'  <text class="callout-txt" x="{tx}" y="{y_callout + 36}">'
+                f'{html.escape(callout_line2)}</text>'
+            )
 
     lines.append("</svg>")
     return "\n".join(lines) + "\n"
@@ -689,7 +801,7 @@ def render_html(subsystems: list[Subsystem], total_exports: int, test_count: int
   <div class="list" id="list"></div>
   <div class="callout">
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 15 14H1z" fill="none" stroke="{WARN}" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6v3.5M8 11.6v.4" stroke="{WARN}" stroke-width="1.5" stroke-linecap="round"/></svg>
-    <span><strong>Not started:</strong> encrypted retail XVD, production GDeflate/XMA2/Bink codecs, RDNA2 XS2 ISA lifting, hardware DXR, and Vulkan backend.</span>
+    <span><strong>Not started:</strong> Xbox unified memory/KernelX, RDNA2 XS2 lifting, retail XVC/XVD crypto, native XMA2/GDeflate/Bink, hardware DXR/Vulkan, and live XSAPI/WinRT.</span>
   </div>
 </main>
 <script>
@@ -727,10 +839,19 @@ def render_html(subsystems: list[Subsystem], total_exports: int, test_count: int
 """
 
 
-def render_markdown_status(subsystems: list[Subsystem], total_exports: int, test_count: int) -> str:
+def render_markdown_status(
+    subsystems: list[Subsystem],
+    cd_subsystems: list[Subsystem],
+    total_exports: int,
+    test_count: int,
+) -> str:
     total_impl = sum(s.implemented for s in subsystems)
     total_target = sum(s.target for s in subsystems)
     overall_pct = (total_impl / total_target * 100.0) if total_target else 0.0
+
+    cd_impl = sum(s.implemented for s in cd_subsystems)
+    cd_target = sum(s.target for s in cd_subsystems)
+    cd_pct = (cd_impl / cd_target * 100.0) if cd_target else 0.0
 
     sorted_subs = sorted(subsystems, key=lambda s: (-s.ratio, -s.implemented, s.name.lower()))
     rows = [
@@ -739,7 +860,10 @@ def render_markdown_status(subsystems: list[Subsystem], total_exports: int, test
         "",
         "![ScarlettX Status](docs/status.svg)",
         "",
-        f"**Status:** `{overall_pct:.1f}%` ({total_impl} of {total_target} tracked functions) · "
+        "![Status of the game Concept Destruction](docs/status_concept_destruction.svg)",
+        "",
+        f"**Emulator Status:** `{overall_pct:.1f}%` ({total_impl} of {total_target} tracked functions, including unimplemented `0%` subsystems) · "
+        f"**Concept Destruction:** `{cd_pct:.1f}%` ({cd_impl} of {cd_target} bring-up milestones) · "
         f"**Exports:** `{total_exports}` · "
         f"**Tests:** `{test_count}/{test_count}` passing · "
         "**Target:** `Xbox Series X|S (Gen9)`",
@@ -753,9 +877,9 @@ def render_markdown_status(subsystems: list[Subsystem], total_exports: int, test
         )
     rows.append("")
     rows.append(
-        "> **Not started:** encrypted retail XVD decryption, production GDeflate/XMA2/Bink decoding, "
-        "precompiled RDNA2 `XS2` ISA lifting, hardware DXR (software BVH fallback is verified on WARP), "
-        "and Vulkan backend. Passing synthetic tests do not imply commercial retail title execution."
+        "> **Not started (0%):** Xbox unified memory (`MEM_GRAPHICS`) & full KernelX, precompiled RDNA2 `XS2` ISA lifting, "
+        "encrypted retail XVC/XVD decryption, production GDeflate/XMA2/Bink decoding, hardware DXR & Vulkan backend, "
+        "and live XSAPI/WinRT services. Passing synthetic tests do not imply commercial retail title execution."
     )
     rows.append("")
     rows.append("_Regenerate with `python tools/generate_status.py` after adding new HLE APIs or subsystems._")
@@ -765,16 +889,53 @@ def render_markdown_status(subsystems: list[Subsystem], total_exports: int, test
 
 def main() -> None:
     subsystems, total_exports, test_count = collect_metrics()
-    svg = render_svg(subsystems, total_exports, test_count)
+    cd_subsystems = collect_concept_destruction_metrics()
+
+    total_impl = sum(s.implemented for s in subsystems)
+    total_target = sum(s.target for s in subsystems)
+    main_badges = [
+        ("functions", f"{total_impl}/{total_target}", BADGE_FN, True),
+        ("exports", str(total_exports), BADGE_EXPORTS, False),
+        ("tests", f"{test_count}/{test_count} passing", BADGE_TESTS, False),
+        ("target", "Xbox Series X|S (Gen9)", BADGE_TARGET, False),
+    ]
+    svg = render_svg(
+        subsystems,
+        badges=main_badges,
+        heading_prefix="Status",
+        callout_lead="Not started:",
+        callout_line1="Xbox unified memory/KernelX, RDNA2 XS2 lifting, retail XVC/XVD crypto, native XMA2/GDeflate/Bink,",
+        callout_line2="hardware DXR/Vulkan, and live XSAPI/WinRT. Synthetic offline shims do not imply retail compatibility.",
+    )
+
+    cd_impl = sum(s.implemented for s in cd_subsystems)
+    cd_target = sum(s.target for s in cd_subsystems)
+    cd_badges = [
+        ("milestones", f"{cd_impl}/{cd_target}", BADGE_FN, True),
+        ("phase", "Phase 3: D3D12 init", BADGE_EXPORTS, False),
+        ("state", "Early startup trace", BADGE_TARGET, False),
+        ("target", "Concept Destruction (Gen9)", BADGE_TESTS, False),
+    ]
+    cd_svg = render_svg(
+        cd_subsystems,
+        badges=cd_badges,
+        heading_prefix="Status of the game Concept Destruction",
+        callout_lead="Current blocker:",
+        callout_line1="Reaches D3D12 CmdList Close/ExecuteCommandLists, then hits 0xC0000005 before PresentX;",
+        callout_line2="missing CmdList vtable slots (21, 22, 50, 51, 52, 67, 83) and copy ABI under investigation.",
+    )
+
     html_doc = render_html(subsystems, total_exports, test_count)
 
     out_svg = ROOT / "docs/status.svg"
+    out_cd_svg = ROOT / "docs/status_concept_destruction.svg"
     out_html = ROOT / "docs/status.html"
     out_svg.parent.mkdir(parents=True, exist_ok=True)
     out_svg.write_text(svg, encoding="utf-8")
+    out_cd_svg.write_text(cd_svg, encoding="utf-8")
     out_html.write_text(html_doc, encoding="utf-8")
 
-    md_block = render_markdown_status(subsystems, total_exports, test_count)
+    md_block = render_markdown_status(subsystems, cd_subsystems, total_exports, test_count)
     readme_path = ROOT / "README.md"
     readme = readme_path.read_text(encoding="utf-8")
 
@@ -793,8 +954,8 @@ def main() -> None:
 
     readme_path.write_text(new_readme, encoding="utf-8")
     print(
-        f"[generate_status] Wrote {out_svg.relative_to(ROOT)}, {out_html.relative_to(ROOT)}, "
-        f"and updated README.md (exports={total_exports}, tests={test_count})"
+        f"[generate_status] Wrote {out_svg.relative_to(ROOT)}, {out_cd_svg.relative_to(ROOT)}, "
+        f"{out_html.relative_to(ROOT)}, and updated README.md (exports={total_exports}, tests={test_count})"
     )
 
 

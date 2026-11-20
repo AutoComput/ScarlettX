@@ -1,9 +1,13 @@
 #include "scarlettx/input/gameinput_abi.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -11,13 +15,31 @@
 
 namespace {
 
+bool GameInputTraceEnabled() {
+    static const bool enabled = []() {
+        const char* v = std::getenv("SCARLETTX_TRACE");
+        return v && v[0] != '\0' && v[0] != '0';
+    }();
+    return enabled;
+}
+
 constexpr int32_t kS_OK = 0;
 constexpr int32_t kE_INVALIDARG = static_cast<int32_t>(0x80070057u);
 constexpr int32_t kE_HANDLE = static_cast<int32_t>(0x80070006u);
+constexpr int32_t kE_POINTER = static_cast<int32_t>(0x80004003u);
+constexpr int32_t kE_NOTIMPL = static_cast<int32_t>(0x80004001u);
 constexpr int32_t kGAMEINPUT_E_READING_NOT_FOUND = static_cast<int32_t>(0x838A0002u);
 
 constexpr uint64_t kVirtualGamepadId = 1;
 constexpr uint64_t kVirtualKeyboardId = 2;
+
+#if defined(_WIN32)
+#define SCARLETTX_GI_CALL __stdcall
+#else
+#define SCARLETTX_GI_CALL
+#endif
+
+using GiComFn = intptr_t (SCARLETTX_GI_CALL*)(void*, uintptr_t, uintptr_t, uintptr_t);
 
 struct ReadingEntry {
     uint64_t handle = 0;
@@ -29,6 +51,12 @@ struct ReadingEntry {
 };
 
 struct GameInputObject {
+    // First field is the COM vtable pointer so real Xbox binaries can call
+    // IGameInput methods directly through the pointer returned by GameInputCreate,
+    // while synthetic C tests can still treat it as an opaque uint64_t handle.
+    const GiComFn* lpVtbl = nullptr;
+    std::atomic<uint32_t> ref_count{1};
+    std::atomic<uint64_t> next_callback_token{1};
     std::mutex mu;
     std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
     uint64_t next_reading_id = 1;
@@ -54,7 +82,6 @@ struct GameInputObject {
 
 struct InputState {
     std::mutex mu;
-    uint64_t next_handle = 1;
     std::unordered_map<uint64_t, std::shared_ptr<GameInputObject>> instances;
 };
 
@@ -69,6 +96,129 @@ std::shared_ptr<GameInputObject> GetInstance(uint64_t handle) {
     return it == State().instances.end() ? nullptr : it->second;
 }
 
+intptr_t SCARLETTX_GI_CALL GiQueryInterface(void* self, uintptr_t /*riid*/, uintptr_t ppv, uintptr_t) {
+    auto* obj = static_cast<GameInputObject*>(self);
+    auto** out = reinterpret_cast<void**>(ppv);
+    if (!out) return kE_POINTER;
+    if (!obj) {
+        *out = nullptr;
+        return kE_INVALIDARG;
+    }
+    obj->ref_count.fetch_add(1, std::memory_order_relaxed);
+    *out = self;
+    return kS_OK;
+}
+
+intptr_t SCARLETTX_GI_CALL GiAddRef(void* self, uintptr_t, uintptr_t, uintptr_t) {
+    auto* obj = static_cast<GameInputObject*>(self);
+    return obj ? static_cast<intptr_t>(obj->ref_count.fetch_add(1, std::memory_order_relaxed) + 1) : 0;
+}
+
+intptr_t SCARLETTX_GI_CALL GiRelease(void* self, uintptr_t, uintptr_t, uintptr_t) {
+    auto* obj = static_cast<GameInputObject*>(self);
+    if (!obj) return 0;
+    const uint32_t rem = obj->ref_count.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (rem == 0) {
+        std::lock_guard<std::mutex> lk(State().mu);
+        State().instances.erase(reinterpret_cast<uint64_t>(obj));
+    }
+    return static_cast<intptr_t>(rem);
+}
+
+intptr_t SCARLETTX_GI_CALL GiGetCurrentTimestamp(void* self, uintptr_t, uintptr_t, uintptr_t) {
+    auto* obj = static_cast<GameInputObject*>(self);
+    return obj ? static_cast<intptr_t>(obj->NowUs()) : 0;
+}
+
+intptr_t SCARLETTX_GI_CALL GiGetCurrentReading(
+    void* /*self*/, uintptr_t input_kind, uintptr_t /*device*/, uintptr_t ppReading) {
+    if (ppReading) {
+        *reinterpret_cast<void**>(ppReading) = nullptr;
+    }
+    if (GameInputTraceEnabled()) {
+        std::cerr << "[ScarlettX][GameInput] IGameInput::GetCurrentReading(kind=0x"
+                  << std::hex << input_kind << std::dec << ") -> GAMEINPUT_E_READING_NOT_FOUND\n";
+    }
+    return kGAMEINPUT_E_READING_NOT_FOUND;
+}
+
+// IGameInput::RegisterDeviceCallback (vtable[9] / +0x48):
+//   HRESULT RegisterDeviceCallback(
+//       IGameInputDevice* device, GameInputKind inputFilter,
+//       GameInputDeviceStatus statusFilter, GameInputEnumerationKind enumKind,
+//       void* context, GameInputDeviceCallback callbackFunc,
+//       GameInputCallbackToken* callbackToken);
+intptr_t SCARLETTX_GI_CALL GiRegisterDeviceCallback(
+    void* self, uintptr_t /*device*/, uintptr_t input_filter, uintptr_t status_filter,
+    uintptr_t enum_kind, uintptr_t /*context*/, uintptr_t /*callback_fn*/, uintptr_t out_token_ptr) {
+    auto* obj = static_cast<GameInputObject*>(self);
+    const uint64_t tok = obj ? obj->next_callback_token.fetch_add(1, std::memory_order_relaxed) : 1;
+    if (out_token_ptr) {
+        *reinterpret_cast<uint64_t*>(out_token_ptr) = tok;
+    }
+    if (GameInputTraceEnabled()) {
+        std::cerr << "[ScarlettX][GameInput] IGameInput::RegisterDeviceCallback(kind=0x"
+                  << std::hex << input_filter << ", status=0x" << status_filter
+                  << ", enum=" << std::dec << enum_kind << ") -> S_OK (tok=" << tok << ")\n";
+    }
+    return kS_OK;
+}
+
+intptr_t SCARLETTX_GI_CALL GiStopCallback(void* /*self*/, uintptr_t tok, uintptr_t, uintptr_t) {
+    if (GameInputTraceEnabled()) {
+        std::cerr << "[ScarlettX][GameInput] IGameInput::StopCallback(tok=" << tok << ")\n";
+    }
+    return 0;
+}
+
+intptr_t SCARLETTX_GI_CALL GiUnregisterCallback(void* /*self*/, uintptr_t tok, uintptr_t, uintptr_t) {
+    if (GameInputTraceEnabled()) {
+        std::cerr << "[ScarlettX][GameInput] IGameInput::UnregisterCallback(tok=" << tok << ") -> true\n";
+    }
+    return 1;
+}
+
+intptr_t SCARLETTX_GI_CALL GiSetFocusPolicy(void* /*self*/, uintptr_t policy, uintptr_t, uintptr_t) {
+    if (GameInputTraceEnabled()) {
+        std::cerr << "[ScarlettX][GameInput] IGameInput::SetFocusPolicy(0x"
+                  << std::hex << policy << std::dec << ")\n";
+    }
+    return 0;
+}
+
+template <int Slot>
+intptr_t SCARLETTX_GI_CALL GiTracedSlot(void* /*self*/, uintptr_t a1, uintptr_t a2, uintptr_t a3) {
+    if (GameInputTraceEnabled()) {
+        std::cerr << "[ScarlettX][GameInput] IGameInput::vtable[" << Slot
+                  << "](a1=0x" << std::hex << a1 << ", a2=0x" << a2 << ", a3=0x" << a3
+                  << std::dec << ") -> E_NOTIMPL\n";
+    }
+    return kE_NOTIMPL;
+}
+
+template <size_t... Is>
+constexpr std::array<GiComFn, sizeof...(Is) + 3> MakeGiVtable(std::index_sequence<Is...>) {
+    return {
+        &GiQueryInterface,
+        &GiAddRef,
+        &GiRelease,
+        &GiTracedSlot<static_cast<int>(Is + 3)>...,
+    };
+}
+
+std::array<GiComFn, 32> BuildGiVtable() {
+    auto vtbl = MakeGiVtable(std::make_index_sequence<29>{});
+    vtbl[3] = &GiGetCurrentTimestamp;
+    vtbl[4] = &GiGetCurrentReading;
+    vtbl[9] = reinterpret_cast<GiComFn>(&GiRegisterDeviceCallback);
+    vtbl[13] = &GiStopCallback;
+    vtbl[14] = &GiUnregisterCallback;
+    vtbl[22] = &GiSetFocusPolicy;
+    return vtbl;
+}
+
+const auto kIGameInputVtbl = BuildGiVtable();
+
 }  // namespace
 
 extern "C" {
@@ -76,6 +226,7 @@ extern "C" {
 int32_t GameInputCreate(uint64_t* out_game_input) {
     if (!out_game_input) return kE_INVALIDARG;
     auto obj = std::make_shared<GameInputObject>();
+    obj->lpVtbl = kIGameInputVtbl.data();
 
     GAMEINPUT_DEVICE_INFO pad{};
     pad.DeviceId = kVirtualGamepadId;
@@ -107,10 +258,16 @@ int32_t GameInputCreate(uint64_t* out_game_input) {
     kb_init.input_kind = GAMEINPUT_KIND_KEYBOARD;
     obj->PushReading(std::move(kb_init));
 
-    std::lock_guard<std::mutex> lk(State().mu);
-    const uint64_t h = State().next_handle++;
-    State().instances[h] = std::move(obj);
+    const uint64_t h = reinterpret_cast<uint64_t>(obj.get());
+    {
+        std::lock_guard<std::mutex> lk(State().mu);
+        State().instances[h] = std::move(obj);
+    }
     *out_game_input = h;
+    if (GameInputTraceEnabled()) {
+        std::cerr << "[ScarlettX][GameInput] GameInputCreate() -> S_OK (IGameInput*=0x"
+                  << std::hex << h << std::dec << ")\n";
+    }
     return kS_OK;
 }
 

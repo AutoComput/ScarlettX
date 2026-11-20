@@ -1889,6 +1889,220 @@ const XgrApiImpl073B7DCBVtable kApiImpl073B7DCBVtable = {{
     reinterpret_cast<void*>(&ApiImpl073B7DCB_UnimplementedSlot<31>), // 31 (+0xF8)
 }};
 
+// Observed second GDK ApiImpl GUID from real Scarlett target disassembly:
+//   {37E56907-2F10-41E8-B72F-36EDB185331A}
+// Official Microsoft interface name is not asserted; vtable offsets and
+// Windows x64 register ABIs below are derived from all 8 target wrapper sites:
+//   +0x00 (slot  0): QueryInterface (this, riid, ppv) -> HRESULT
+//   +0x08 (slot  1): AddRef (this) -> uint32_t
+//   +0x10 (slot  2): Release (this) -> uint32_t
+//   +0x18 (slot  3): (this) -> HRESULT
+//   +0x20 (slot  4): (this) -> HRESULT
+//   +0x28 (slot  5): (this, arg1, uint16_t* out_val) -> HRESULT
+//   +0x30 (slot  6): (this, arg1, arg2, arg3, uint64_t* out_token) -> HRESULT
+//   +0x38 (slot  7): (this, uint64_t token, uint8_t flag) -> bool/u8
+//   +0x78 (slot 15): (this, void* out_state) -> HRESULT (caller polls byte +0x0c != 0)
+//   +0x80 (slot 16): (this, arg1, arg2, arg3, uint64_t* out_token) -> HRESULT
+//   +0x88 (slot 17): (this, uint64_t token, uint8_t flag) -> bool/u8
+constexpr XgrGuid kGuidApiImpl37E56907 = {
+    0x37E56907u, 0x2F10u, 0x41E8u, {0xB7, 0x2F, 0x36, 0xED, 0xB1, 0x85, 0x33, 0x1A}};
+
+struct XgrApiImpl37E56907Vtable {
+    void* slots[24];
+};
+
+struct XgrApiImpl37E56907 {
+    const XgrApiImpl37E56907Vtable* vtbl;
+    std::atomic<uint32_t> ref_count{1};
+};
+
+std::atomic<uint64_t> g_api37e5_next_token{1};
+
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl37E56907_QueryInterface(
+    void* self_ptr,
+    const void* riid,
+    void** ppv) {
+    if (!ppv) {
+        return XGR_E_POINTER;
+    }
+    *ppv = nullptr;
+    if (!self_ptr || !riid) {
+        return XGR_E_INVALIDARG;
+    }
+    if (GuidEquals(riid, kGuidApiImpl37E56907) || GuidEquals(riid, kIidIUnknown)) {
+        auto* self = static_cast<XgrApiImpl37E56907*>(self_ptr);
+        self->ref_count.fetch_add(1, std::memory_order_relaxed);
+        *ppv = self;
+        return XGR_S_OK;
+    }
+    return static_cast<XGameResult>(0x80004002u);  // E_NOINTERFACE
+}
+
+uint32_t SCARLETTX_GDK_CALLBACK ApiImpl37E56907_AddRef(void* self_ptr) {
+    if (!self_ptr) {
+        return 0;
+    }
+    auto* self = static_cast<XgrApiImpl37E56907*>(self_ptr);
+    return self->ref_count.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+uint32_t SCARLETTX_GDK_CALLBACK ApiImpl37E56907_Release(void* self_ptr) {
+    if (!self_ptr) {
+        return 0;
+    }
+    auto* self = static_cast<XgrApiImpl37E56907*>(self_ptr);
+    const uint32_t remaining = self->ref_count.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (remaining == 0) {
+        delete self;
+    }
+    return remaining;
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl37E56907_Slot03(void* /*self_ptr*/) {
+    std::fprintf(stderr, "[ScarlettX][xgameruntime] ApiImpl{37E56907}::+0x18() -> S_OK\n");
+    std::fflush(stderr);
+    return XGR_S_OK;
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl37E56907_Slot04(void* /*self_ptr*/) {
+    std::fprintf(stderr, "[ScarlettX][xgameruntime] ApiImpl{37E56907}::+0x20() -> S_OK\n");
+    std::fflush(stderr);
+    return XGR_S_OK;
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl37E56907_Slot05(
+    void* /*self_ptr*/,
+    uintptr_t arg1,
+    uint16_t* out_val) {
+    if (!out_val) {
+        return XGR_E_POINTER;
+    }
+    *out_val = 0;
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] ApiImpl{37E56907}::+0x28(a1=0x%llx) -> S_OK (val=0)\n",
+                 static_cast<unsigned long long>(arg1));
+    std::fflush(stderr);
+    return XGR_S_OK;
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl37E56907_Slot06(
+    void* /*self_ptr*/,
+    uintptr_t arg1,
+    uintptr_t arg2,
+    uintptr_t arg3,
+    uint64_t* out_token) {
+    if (!out_token) {
+        return XGR_E_POINTER;
+    }
+    const uint64_t tok = g_api37e5_next_token.fetch_add(1, std::memory_order_relaxed);
+    *out_token = tok;
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] ApiImpl{37E56907}::+0x30(a1=0x%llx, a2=0x%llx, a3=0x%llx) -> S_OK (tok=%llu)\n",
+                 static_cast<unsigned long long>(arg1),
+                 static_cast<unsigned long long>(arg2),
+                 static_cast<unsigned long long>(arg3),
+                 static_cast<unsigned long long>(tok));
+    std::fflush(stderr);
+    return XGR_S_OK;
+}
+
+bool SCARLETTX_GDK_CALLBACK ApiImpl37E56907_Slot07(
+    void* /*self_ptr*/,
+    uint64_t token,
+    uint8_t flag) {
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] ApiImpl{37E56907}::+0x38(tok=%llu, flag=%u) -> true\n",
+                 static_cast<unsigned long long>(token),
+                 static_cast<unsigned>(flag));
+    std::fflush(stderr);
+    return true;
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl37E56907_Slot15(
+    void* /*self_ptr*/,
+    void* out_state) {
+    if (!out_state) {
+        return XGR_E_POINTER;
+    }
+    // Caller polls byte at offset +0x0c until non-zero (with 50ms Sleep).
+    static_cast<uint8_t*>(out_state)[0x0c] = 1;
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] ApiImpl{37E56907}::+0x78(out=%p) -> S_OK (byte+0x0c=1)\n",
+                 out_state);
+    std::fflush(stderr);
+    return XGR_S_OK;
+}
+
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl37E56907_Slot16(
+    void* /*self_ptr*/,
+    uintptr_t arg1,
+    uintptr_t arg2,
+    uintptr_t arg3,
+    uint64_t* out_token) {
+    if (!out_token) {
+        return XGR_E_POINTER;
+    }
+    const uint64_t tok = g_api37e5_next_token.fetch_add(1, std::memory_order_relaxed);
+    *out_token = tok;
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] ApiImpl{37E56907}::+0x80(a1=0x%llx, a2=0x%llx, a3=0x%llx) -> S_OK (tok=%llu)\n",
+                 static_cast<unsigned long long>(arg1),
+                 static_cast<unsigned long long>(arg2),
+                 static_cast<unsigned long long>(arg3),
+                 static_cast<unsigned long long>(tok));
+    std::fflush(stderr);
+    return XGR_S_OK;
+}
+
+bool SCARLETTX_GDK_CALLBACK ApiImpl37E56907_Slot17(
+    void* /*self_ptr*/,
+    uint64_t token,
+    uint8_t flag) {
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] ApiImpl{37E56907}::+0x88(tok=%llu, flag=%u) -> true\n",
+                 static_cast<unsigned long long>(token),
+                 static_cast<unsigned>(flag));
+    std::fflush(stderr);
+    return true;
+}
+
+template <uint32_t SlotIndex>
+XGameResult SCARLETTX_GDK_CALLBACK ApiImpl37E56907_UnimplementedSlot(void* /*self_ptr*/) {
+    std::fprintf(stderr,
+                 "[ScarlettX][xgameruntime] ApiImpl{37E56907}::+0x%X (slot %u) -> E_NOTIMPL\n",
+                 SlotIndex * 8u,
+                 SlotIndex);
+    std::fflush(stderr);
+    return static_cast<XGameResult>(0x80004001u);  // E_NOTIMPL
+}
+
+const XgrApiImpl37E56907Vtable kApiImpl37E56907Vtable = {{
+    reinterpret_cast<void*>(&ApiImpl37E56907_QueryInterface),        // 0  (+0x00)
+    reinterpret_cast<void*>(&ApiImpl37E56907_AddRef),                // 1  (+0x08)
+    reinterpret_cast<void*>(&ApiImpl37E56907_Release),               // 2  (+0x10)
+    reinterpret_cast<void*>(&ApiImpl37E56907_Slot03),                // 3  (+0x18)
+    reinterpret_cast<void*>(&ApiImpl37E56907_Slot04),                // 4  (+0x20)
+    reinterpret_cast<void*>(&ApiImpl37E56907_Slot05),                // 5  (+0x28)
+    reinterpret_cast<void*>(&ApiImpl37E56907_Slot06),                // 6  (+0x30)
+    reinterpret_cast<void*>(&ApiImpl37E56907_Slot07),                // 7  (+0x38)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<8>),  // 8  (+0x40)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<9>),  // 9  (+0x48)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<10>), // 10 (+0x50)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<11>), // 11 (+0x58)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<12>), // 12 (+0x60)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<13>), // 13 (+0x68)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<14>), // 14 (+0x70)
+    reinterpret_cast<void*>(&ApiImpl37E56907_Slot15),                // 15 (+0x78)
+    reinterpret_cast<void*>(&ApiImpl37E56907_Slot16),                // 16 (+0x80)
+    reinterpret_cast<void*>(&ApiImpl37E56907_Slot17),                // 17 (+0x88)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<18>), // 18 (+0x90)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<19>), // 19 (+0x98)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<20>), // 20 (+0xA0)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<21>), // 21 (+0xA8)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<22>), // 22 (+0xB0)
+    reinterpret_cast<void*>(&ApiImpl37E56907_UnimplementedSlot<23>), // 23 (+0xB8)
+}};
+
 }  // namespace
 
 extern "C" {
@@ -1910,6 +2124,21 @@ XGameResult QueryApiImpl(const void* api_id, const void* riid, void** out_impl) 
             return XGR_E_OUTOFMEMORY;
         }
         impl->vtbl = &kApiImpl073B7DCBVtable;
+        *out_impl = impl;
+        std::fprintf(stderr,
+                     "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> S_OK (%p)\n",
+                     api_str, iid_str, static_cast<void*>(impl));
+        std::fflush(stderr);
+        return XGR_S_OK;
+    }
+
+    if (GuidEquals(api_id, kGuidApiImpl37E56907) &&
+        (GuidEquals(riid, kGuidApiImpl37E56907) || GuidEquals(riid, kIidIUnknown))) {
+        auto* impl = new (std::nothrow) XgrApiImpl37E56907();
+        if (!impl) {
+            return XGR_E_OUTOFMEMORY;
+        }
+        impl->vtbl = &kApiImpl37E56907Vtable;
         *out_impl = impl;
         std::fprintf(stderr,
                      "[ScarlettX][xgameruntime] QueryApiImpl(api=%s, iid=%s) -> S_OK (%p)\n",

@@ -48,34 +48,70 @@ ApuState& State() {
     return s;
 }
 
-// Minimal COM vtable for IAcpHal (IUnknown + SHAPE queue stubs).
+// IAcpHal vtable layout observed from real Scarlett target disassembly
+// (non-IUnknown interface):
+//   +0x00: Connect(uint32_t cmdQueueLen, uint32_t msgQueueLen) -> HRESULT
+//   +0x08: Disconnect() -> HRESULT
+//   +0x10: SubmitCommand(uint32_t type, uint32_t id, uint32_t flags, const void* data, uint32_t extra) -> HRESULT
+//   +0x18: PopMessage(void* msg) -> bool (uint8_t; 0 = empty, 1 = popped; Disconnect expects msg[0] == 0x80)
+//   +0x20: StubSlot4() -> HRESULT
+//   +0x28: Release() -> uint32_t
 struct IAcpHalVtbl {
-    int32_t (SCARLETTX_ACP_CALL* QueryInterface)(void* self, const void* riid, void** ppv);
-    uint32_t (SCARLETTX_ACP_CALL* AddRef)(void* self);
-    uint32_t (SCARLETTX_ACP_CALL* Release)(void* self);
     int32_t (SCARLETTX_ACP_CALL* Connect)(void* self, uint32_t cmdQueueLen, uint32_t msgQueueLen);
     int32_t (SCARLETTX_ACP_CALL* Disconnect)(void* self);
-    int32_t (SCARLETTX_ACP_CALL* SubmitCommand)(void* self, uint32_t type, uint32_t id, uint32_t flags, const void* data);
-    int32_t (SCARLETTX_ACP_CALL* PopMessage)(void* self, void* msg);
+    int32_t (SCARLETTX_ACP_CALL* SubmitCommand)(
+        void* self, uint32_t type, uint32_t id, uint32_t flags, const void* data, uint32_t extra);
+    uint8_t (SCARLETTX_ACP_CALL* PopMessage)(void* self, void* msg);
+    int32_t (SCARLETTX_ACP_CALL* StubSlot4)(void* self);
+    uint32_t (SCARLETTX_ACP_CALL* Release)(void* self);
+    int32_t (SCARLETTX_ACP_CALL* StubSlot6)(void* self);
     int32_t (SCARLETTX_ACP_CALL* StubSlot7)(void* self);
-    int32_t (SCARLETTX_ACP_CALL* StubSlot8)(void* self);
-    int32_t (SCARLETTX_ACP_CALL* StubSlot9)(void* self);
 };
 
 struct AcpHalImpl {
     const IAcpHalVtbl* lpVtbl;
     std::atomic<uint32_t> ref_count{1};
+    std::atomic<bool> disconnect_pending{false};
 };
 
-int32_t SCARLETTX_ACP_CALL AcpQueryInterface(void* self, const void* /*riid*/, void** ppv) {
-    if (!ppv) return kE_POINTER;
-    static_cast<AcpHalImpl*>(self)->ref_count.fetch_add(1, std::memory_order_relaxed);
-    *ppv = self;
+int32_t SCARLETTX_ACP_CALL AcpConnect(void* self, uint32_t cmdLen, uint32_t msgLen) {
+    auto* obj = static_cast<AcpHalImpl*>(self);
+    obj->disconnect_pending.store(false, std::memory_order_release);
+    if (TraceEnabled()) {
+        std::cerr << "[ScarlettX][AcpHal] IAcpHal::Connect(cmd=" << cmdLen << ", msg=" << msgLen << ")\n";
+    }
     return kS_OK;
 }
 
-uint32_t SCARLETTX_ACP_CALL AcpAddRef(void* self) {
-    return static_cast<AcpHalImpl*>(self)->ref_count.fetch_add(1, std::memory_order_relaxed) + 1;
+int32_t SCARLETTX_ACP_CALL AcpDisconnect(void* self) {
+    auto* obj = static_cast<AcpHalImpl*>(self);
+    obj->disconnect_pending.store(true, std::memory_order_release);
+    if (TraceEnabled()) {
+        std::cerr << "[ScarlettX][AcpHal] IAcpHal::Disconnect()\n";
+    }
+    return kS_OK;
+}
+
+int32_t SCARLETTX_ACP_CALL AcpSubmitCommand(
+    void* /*self*/, uint32_t type, uint32_t id, uint32_t /*flags*/, const void* /*data*/, uint32_t /*extra*/) {
+    if (TraceEnabled()) {
+        std::cerr << "[ScarlettX][AcpHal] IAcpHal::SubmitCommand(type=0x" << std::hex << type
+                  << ", id=" << std::dec << id << ")\n";
+    }
+    return kS_OK;
+}
+
+uint8_t SCARLETTX_ACP_CALL AcpPopMessage(void* self, void* msg) {
+    auto* obj = static_cast<AcpHalImpl*>(self);
+    if (obj->disconnect_pending.exchange(false, std::memory_order_acq_rel)) {
+        if (msg) {
+            std::memset(msg, 0, 24);
+            uint32_t disc = 0x80u;
+            std::memcpy(msg, &disc, sizeof(disc));
+        }
+        return 1;
+    }
+    return 0;
 }
 
 uint32_t SCARLETTX_ACP_CALL AcpRelease(void* self) {
@@ -85,41 +121,17 @@ uint32_t SCARLETTX_ACP_CALL AcpRelease(void* self) {
     return rem;
 }
 
-int32_t SCARLETTX_ACP_CALL AcpConnect(void* /*self*/, uint32_t cmdLen, uint32_t msgLen) {
-    if (TraceEnabled()) {
-        std::cerr << "[ScarlettX][AcpHal] IAcpHal::Connect(cmd=" << cmdLen << ", msg=" << msgLen << ")\n";
-    }
-    return kS_OK;
-}
-
-int32_t SCARLETTX_ACP_CALL AcpDisconnect(void* /*self*/) {
-    return kS_OK;
-}
-
-int32_t SCARLETTX_ACP_CALL AcpSubmitCommand(void* /*self*/, uint32_t type, uint32_t id, uint32_t /*flags*/, const void* /*data*/) {
-    if (TraceEnabled()) {
-        std::cerr << "[ScarlettX][AcpHal] IAcpHal::SubmitCommand(type=" << type << ", id=" << id << ")\n";
-    }
-    return kS_OK;
-}
-
-int32_t SCARLETTX_ACP_CALL AcpPopMessage(void* /*self*/, void* /*msg*/) {
-    return static_cast<int32_t>(0x00000001u);  // S_FALSE (no pending messages)
-}
-
 int32_t SCARLETTX_ACP_CALL AcpStubOk(void* /*self*/) {
     return kS_OK;
 }
 
 const IAcpHalVtbl kAcpVtbl = {
-    &AcpQueryInterface,
-    &AcpAddRef,
-    &AcpRelease,
     &AcpConnect,
     &AcpDisconnect,
     &AcpSubmitCommand,
     &AcpPopMessage,
     &AcpStubOk,
+    &AcpRelease,
     &AcpStubOk,
     &AcpStubOk,
 };
@@ -128,13 +140,56 @@ const IAcpHalVtbl kAcpVtbl = {
 
 extern "C" {
 
-int32_t SCARLETTX_ACP_CALL AcpHalAllocateShapeContexts(const ACP_SHAPE_CONTEXT_COUNTS* numContexts) {
-    if (!numContexts) return kE_INVALIDARG;
+int32_t SCARLETTX_ACP_CALL AcpHalAllocateShapeContexts(ACP_SHAPE_CONTEXT_COUNTS* ctx) {
+    if (!ctx) return kE_INVALIDARG;
+    auto alloc_ctx_buf = [](uint32_t count, size_t elem_bytes) -> void* {
+        if (count == 0) return nullptr;
+        const size_t bytes = static_cast<size_t>(count) * elem_bytes;
+#if defined(_WIN32)
+        void* p = _aligned_malloc(bytes, 64);
+#else
+        void* p = nullptr;
+        if (posix_memalign(&p, 64, bytes) != 0) p = nullptr;
+#endif
+        if (p) std::memset(p, 0, bytes);
+        return p;
+    };
+    auto free_ctx_buf = [](void*& p) {
+        if (!p) return;
+#if defined(_WIN32)
+        _aligned_free(p);
+#else
+        std::free(p);
+#endif
+        p = nullptr;
+    };
+
     std::lock_guard<std::mutex> lk(State().mu);
-    State().shape_contexts = *numContexts;
+    free_ctx_buf(State().shape_contexts.srcContexts);
+    free_ctx_buf(State().shape_contexts.eqCompContexts);
+    free_ctx_buf(State().shape_contexts.filtVolContexts);
+    free_ctx_buf(State().shape_contexts.dmaContexts);
+    free_ctx_buf(State().shape_contexts.xmaContexts);
+    free_ctx_buf(State().shape_contexts.pcmContexts);
+
+    // Observed strides from ConceptDestruction.exe:
+    // +0x00/+0x18: src (32B), +0x0c/+0x30: dma (16B), +0x10/+0x38: xma (64B).
+    ctx->srcContexts = alloc_ctx_buf(ctx->numSrcContexts, 32);
+    ctx->eqCompContexts = alloc_ctx_buf(ctx->numEqCompContexts, 64);
+    ctx->filtVolContexts = alloc_ctx_buf(ctx->numFiltVolContexts, 64);
+    ctx->dmaContexts = alloc_ctx_buf(ctx->numDmaContexts, 16);
+    ctx->xmaContexts = alloc_ctx_buf(ctx->numXmaContexts, 64);
+    ctx->pcmContexts = alloc_ctx_buf(ctx->numPcmContexts, 64);
+    State().shape_contexts = *ctx;
+
     if (TraceEnabled()) {
-        std::cerr << "[ScarlettX][AcpHal] AcpHalAllocateShapeContexts(xma=" << numContexts->numXmaContexts
-                  << ", pcm=" << numContexts->numPcmContexts << ")\n";
+        std::cerr << "[ScarlettX][AcpHal] AcpHalAllocateShapeContexts(src=" << ctx->numSrcContexts
+                  << ", dma=" << ctx->numDmaContexts
+                  << ", xma=" << ctx->numXmaContexts
+                  << ", pcm=" << ctx->numPcmContexts
+                  << ") -> src=" << ctx->srcContexts
+                  << " dma=" << ctx->dmaContexts
+                  << " xma=" << ctx->xmaContexts << "\n";
     }
     return kS_OK;
 }
@@ -151,7 +206,22 @@ int32_t SCARLETTX_ACP_CALL AcpHalCreate(void** acpHal) {
 }
 
 int32_t SCARLETTX_ACP_CALL AcpHalReleaseShapeContexts(void) {
+    auto free_ctx_buf = [](void*& p) {
+        if (!p) return;
+#if defined(_WIN32)
+        _aligned_free(p);
+#else
+        std::free(p);
+#endif
+        p = nullptr;
+    };
     std::lock_guard<std::mutex> lk(State().mu);
+    free_ctx_buf(State().shape_contexts.srcContexts);
+    free_ctx_buf(State().shape_contexts.eqCompContexts);
+    free_ctx_buf(State().shape_contexts.filtVolContexts);
+    free_ctx_buf(State().shape_contexts.dmaContexts);
+    free_ctx_buf(State().shape_contexts.xmaContexts);
+    free_ctx_buf(State().shape_contexts.pcmContexts);
     std::memset(&State().shape_contexts, 0, sizeof(State().shape_contexts));
     return kS_OK;
 }

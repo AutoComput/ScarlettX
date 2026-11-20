@@ -27,17 +27,23 @@ typedef struct APU_HEAP_STATE {
 } APU_HEAP_STATE;
 
 typedef struct ACP_SHAPE_CONTEXT_COUNTS {
-    uint32_t numSrcContexts;
-    uint32_t numEqCompContexts;
-    uint32_t numFiltVolContexts;
-    uint32_t numDmaContexts;
-    uint32_t numXmaContexts;
-    uint32_t numPcmContexts;
+    uint32_t numSrcContexts;      // +0x00 (observed stride: 32 bytes)
+    uint32_t numEqCompContexts;   // +0x04
+    uint32_t numFiltVolContexts;  // +0x08
+    uint32_t numDmaContexts;      // +0x0c (observed stride: 16 bytes)
+    uint32_t numXmaContexts;      // +0x10 (observed stride: 64 bytes)
+    uint32_t numPcmContexts;      // +0x14
+    void* srcContexts;            // +0x18
+    void* eqCompContexts;         // +0x20
+    void* filtVolContexts;        // +0x28
+    void* dmaContexts;            // +0x30
+    void* xmaContexts;            // +0x38
+    void* pcmContexts;            // +0x40
 } ACP_SHAPE_CONTEXT_COUNTS;
 
 // All 10 verified exports from EmbeddedXvd/Windows/System32/AcpHal.dll
 SCARLETTX_ACP_API int32_t SCARLETTX_ACP_CALL AcpHalAllocateShapeContexts(
-    const ACP_SHAPE_CONTEXT_COUNTS* numContexts);
+    ACP_SHAPE_CONTEXT_COUNTS* numContexts);
 
 SCARLETTX_ACP_API int32_t SCARLETTX_ACP_CALL AcpHalCreate(
     void** acpHal);
